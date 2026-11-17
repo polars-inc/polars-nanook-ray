@@ -72,11 +72,10 @@ sys.stdin.read()
 
 def _alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):  # reaped
         return False
     # an exited child the kernel hasn't reaped yet is gone for our purposes
-    stat = pathlib.Path(f"/proc/{pid}/stat").read_text()
     return stat.split(")")[-1].split()[0] != "Z"
 
 
