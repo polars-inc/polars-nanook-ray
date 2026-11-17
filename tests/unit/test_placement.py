@@ -3,31 +3,25 @@ import pytest
 from polars_nanook_ray.actors import placement
 from polars_nanook_ray.actors.placement import (
     NoRoomForWorkers,
-    by_index,
     check_room,
     plan_workers,
-    worker_name,
 )
+from polars_nanook_ray.identity import WorkerId
 
 GIB = 1024**3
 
 
-def test_worker_name_is_its_index() -> None:
-    assert worker_name(0) == "worker-0"
-    assert worker_name(12) == "worker-12"
-
-
 def test_plan_takes_the_lowest_free_indices() -> None:
-    assert plan_workers(3, set()) == ["worker-0", "worker-1", "worker-2"]
+    assert plan_workers(3, set()) == [WorkerId(0), WorkerId(1), WorkerId(2)]
 
 
 def test_plan_reuses_a_freed_index() -> None:
-    assert plan_workers(3, {"worker-1"}) == ["worker-0", "worker-2"]
+    assert plan_workers(3, {WorkerId(1)}) == [WorkerId(0), WorkerId(2)]
 
 
 @pytest.mark.parametrize("target", [0, 1, -1])
 def test_plan_nothing_when_the_workers_exist(target: int) -> None:
-    assert plan_workers(target, {"worker-0"}) == []
+    assert plan_workers(target, {WorkerId(0)}) == []
 
 
 def _nodes(monkeypatch: pytest.MonkeyPatch, *nodes: tuple[float, float, bool]) -> None:
@@ -69,11 +63,3 @@ def test_dead_nodes_have_no_room(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(NoRoomForWorkers):
         check_room(cpus=1, memory=GIB)
-
-
-def test_by_index_sorts_numerically() -> None:
-    assert by_index({"worker-10", "worker-2", "worker-1"}) == [
-        "worker-1",
-        "worker-2",
-        "worker-10",
-    ]

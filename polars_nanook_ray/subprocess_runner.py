@@ -8,12 +8,16 @@ import subprocess
 import sys
 import sysconfig
 import threading
+import typing
 
 import psutil
 import ray
 import toml
 
-from polars_nanook_ray.engine_instance_id import EngineInstanceId
+from polars_nanook_ray.identity import identify
+
+if typing.TYPE_CHECKING:
+    from polars_nanook_ray.identity import Identity
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +45,11 @@ def _resolve_compute_script() -> str:
 
 
 class SubprocessRunner:
-    """Run one binary instance for an actor, as a subprocess on the host."""
+    """Run the binary of the scheduler or a worker, as a subprocess on the host."""
 
-    def __init__(
-        self,
-        binary_path: str | None,
-        instance_id: str,
-    ) -> None:
+    def __init__(self, binary_path: str | None, identity: "Identity") -> None:
         self.binary_path = binary_path
-        self.instance_id = instance_id
+        self.identity = identity
 
         self._handle: subprocess.Popen[bytes] | None = None
         self._stopping = threading.Event()
@@ -66,7 +66,7 @@ class SubprocessRunner:
             if exit_code < 0
             else f"exited with code {exit_code}"
         )
-        msg = f"{self.instance_id} {reason}, see the actor logs for its output"
+        msg = f"{self.identity} {reason}, see the actor logs for its output"
         raise RuntimeError(msg)
 
     @functools.cached_property
@@ -90,11 +90,11 @@ class SubprocessRunner:
         self._stopping.clear()
         args = _service_args(config_path)
         self._handle = subprocess.Popen([*self.command, *args], env=env)
-        logger.info("Process ID of %s: %d", self.instance_id, self._handle.pid)
+        logger.info("Process ID of %s: %d", self.identity, self._handle.pid)
         threading.Thread(
             target=self._exit_with_binary,
             args=(self._handle,),
-            name=f"{self.instance_id}-watch",
+            name=f"{self.identity}-watch",
             daemon=True,
         ).start()
 
@@ -109,7 +109,7 @@ class SubprocessRunner:
             return
         logger.error(
             "%s (%d) exited with code %d; exiting its actor",
-            self.instance_id,
+            self.identity,
             handle.pid,
             exit_code,
         )
@@ -120,7 +120,7 @@ class SubprocessRunner:
         """Stop the binary, killing it on timeout; a no-op when not started."""
         self._stopping.set()
         if self._handle is not None:
-            logger.info("Stopping %s (%d)", self.instance_id, self._handle.pid)
+            logger.info("Stopping %s (%d)", self.identity, self._handle.pid)
             self._handle.terminate()
             try:
                 self._handle.wait(timeout=10)
@@ -140,11 +140,9 @@ class SubprocessRunner:
         except (OSError, ValueError):  # unreadable, not UTF-8 or not TOML
             return False
 
-        instance_id = EngineInstanceId.parse(config.get("instance_id"))
         return (
             config.get("cluster_id") == cluster_id
-            and instance_id is not None
-            and instance_id.actor_name == self.instance_id
+            and identify(config.get("instance_id")) == self.identity
         )
 
     def stop_orphans(self, cluster_id: str) -> None:
@@ -155,7 +153,7 @@ class SubprocessRunner:
 
                 logger.warning(
                     "Stopping orphan '%s' process (%d) left over from a previous crash",
-                    self.instance_id,
+                    self.identity,
                     process.pid,
                 )
                 process.terminate()

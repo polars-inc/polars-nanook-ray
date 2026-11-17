@@ -7,9 +7,9 @@ import ray
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 from ray.actor import ActorHandle
 
-from polars_nanook_ray.actors.scheduler import resolve_scheduler_name
 from polars_nanook_ray.actors.utils import _handle_sigterm
 from polars_nanook_ray.config import SCALER_HOST, PolarsRayClusterConfig
+from polars_nanook_ray.identity import SCHEDULER
 
 SCALER_NAME_PREFIX = "scaler"
 
@@ -36,10 +36,7 @@ class _ScalingRequestHandler(http.server.BaseHTTPRequestHandler):
     # resolve lazily on each call rather than once at construction: the scaler
     # should start before the scheduler actor for the latter to bind to it
     def _scheduler_actor(self) -> ActorHandle:
-        return ray.get_actor(
-            resolve_scheduler_name(),
-            namespace=self.server.cluster_id,
-        )
+        return ray.get_actor(SCHEDULER.actor_name, namespace=self.server.cluster_id)
 
     def _respond(self, status: int, payload: dict | None = None) -> None:
         body = json.dumps(payload).encode() if payload is not None else b""

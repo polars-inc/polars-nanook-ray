@@ -1,13 +1,10 @@
 import itertools
 import logging
-import re
 import typing
 
 import ray
 
-WORKER_NAME_PREFIX = "worker"
-
-_WORKER_NAME = re.compile(rf"{WORKER_NAME_PREFIX}-(0|[1-9][0-9]*)")
+from polars_nanook_ray.identity import WorkerId
 
 logger = logging.getLogger(__name__)
 
@@ -16,36 +13,15 @@ class NoRoomForWorkers(RuntimeError):
     pass
 
 
-def worker_name(index: int) -> str:
-    """Return the actor name of the worker at `index`; it says nothing of its node."""
-    return f"{WORKER_NAME_PREFIX}-{index}"
+def plan_workers(target: int, running: typing.Collection[WorkerId]) -> list[WorkerId]:
+    """Return the workers to start for `target` workers to exist.
 
-
-def list_worker_names(namespace: str) -> set[str]:
-    """Return the names of the workers in `namespace`, straight from the GCS.
-
-    Lists those waiting for room on a node too.
-    """
-    return {
-        actor["name"]
-        for actor in ray.util.list_named_actors(all_namespaces=True)
-        if actor["namespace"] == namespace and _WORKER_NAME.fullmatch(actor["name"])
-    }
-
-
-def by_index(names: typing.Iterable[str]) -> list[str]:
-    """Return the worker names given, sorted by their index."""
-    return sorted(names, key=lambda name: int(name.rsplit("-", 1)[1]))
-
-
-def plan_workers(target: int, running: typing.Collection[str]) -> list[str]:
-    """Return the names of the workers to start for `target` workers to exist.
-
-    `running` holds the names of the existing workers, as `list_worker_names` returns
-    them; the new workers take the lowest free indices. Ray picks their nodes.
+    `running` holds the existing workers, as `list_workers` returns them, also those
+    waiting for room on a node; the new workers take the lowest free indices. Ray
+    picks their nodes.
     """
     missing = max(target - len(running), 0)
-    free = (name for i in itertools.count() if (name := worker_name(i)) not in running)
+    free = (w for i in itertools.count() if (w := WorkerId(i)) not in running)
     return list(itertools.islice(free, missing))
 
 
@@ -96,17 +72,17 @@ class WorkerPoolReconciler:
     def __init__(
         self,
         interval: float,
-        start: typing.Callable[[str], object],
-        running: typing.Callable[[], set[str]],
+        start: typing.Callable[[WorkerId], object],
+        running: typing.Callable[[], set[WorkerId]],
     ) -> None:
         self.interval = interval
         self._start = start
         self._running = running
 
-    def reconcile(self, target: int) -> list[str]:
-        """Start workers up to `target`; return the names of those started."""
+    def reconcile(self, target: int) -> list[WorkerId]:
+        """Start workers up to `target`; return those started."""
         started = plan_workers(target, self._running())
-        for name in started:
-            logger.warning("Replacing worker %s", name)
-            self._start(name)
+        for worker in started:
+            logger.warning("Replacing worker %s", worker)
+            self._start(worker)
         return started
