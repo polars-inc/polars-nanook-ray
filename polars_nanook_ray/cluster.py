@@ -86,7 +86,14 @@ class PolarsRayCluster:
             return False
         return True
 
-    def _start_scheduler(self, options: dict[str, typing.Any]) -> None:
+    def _scheduler_options(self) -> dict[str, typing.Any]:
+        return head_node_options(
+            "scheduler",
+            num_cpus=self.config.scheduler.cpus_hint,
+            memory=self.config.scheduler.memory_hint,
+        )
+
+    def _start_scheduler(self) -> None:
         actor_name = resolve_scheduler_name()
 
         try:
@@ -104,7 +111,7 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
-            **options,
+            **self._scheduler_options(),
         ).remote(self.config)
 
     def _start_workers(self) -> None:
@@ -257,14 +264,12 @@ class PolarsRayCluster:
 
     def start(self) -> None:
         """Start (or reconnect to) our various actors; block until ready."""
-        scheduler_options = head_node_options(
-            "scheduler",
-            num_cpus=self.config.scheduler.cpus_hint,
-            memory=self.config.scheduler.memory_hint,
-        )
+        scheduler_exists = self._actor_exists(resolve_scheduler_name())
+        if not scheduler_exists:
+            self._scheduler_options()  # fail before the scaler is created
 
         self.config._port_availability(
-            check_scheduler=not self._actor_exists(resolve_scheduler_name()),
+            check_scheduler=not scheduler_exists,
             check_workers=[
                 worker_id
                 for worker_id in range(self.config.num_workers)
@@ -277,7 +282,7 @@ class PolarsRayCluster:
             self._start_scaler()
             self._wait_for_scaler()
 
-        self._start_scheduler(scheduler_options)
+        self._start_scheduler()
         self._start_workers()
 
         self._wait_for_scheduler()
