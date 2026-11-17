@@ -3,12 +3,14 @@ import functools
 import logging
 import os
 import pathlib
+import secrets
 import shutil
 import signal
 import socket
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import threading
 import typing
 
@@ -74,6 +76,11 @@ class SubprocessRunner:
     def __init__(self, binary_path: str | None, identity: "Identity") -> None:
         self.binary_path = binary_path
         self.identity = identity
+        self.config_path = pathlib.Path(
+            tempfile.gettempdir(),
+            f"{identity.actor_name}-{secrets.token_hex(8)}",
+            "config.toml",
+        )
 
         self._handle: subprocess.Popen[bytes] | None = None
         self._stopping = threading.Event()
@@ -108,12 +115,17 @@ class SubprocessRunner:
         """Return the address the scheduler and workers reach the binary on."""
         return ray.util.get_node_ip_address()
 
-    def start(self, config_path: pathlib.Path, env: dict[str, str]) -> None:
-        """Launch the service of the config given, without waiting for it."""
+    def start(self, config: str, env: typing.Mapping[str, str]) -> None:
+        """Write the TOML config given and launch its service, without waiting for it.
+
+        `env` is added to this process's environment.
+        """
         self._stopping.clear()
+        self.config_path.parent.mkdir(mode=0o700, exist_ok=True)
+        self.config_path.write_text(config)
         self._handle = subprocess.Popen(
-            [*self.command, "service", "--config-path", str(config_path)],
-            env=env,
+            [*self.command, "service", "--config-path", str(self.config_path)],
+            env={**os.environ, **env},
             preexec_fn=_die_with_this_process(),
         )
         logger.info("Process ID of %s: %d", self.identity, self._handle.pid)
@@ -143,7 +155,7 @@ class SubprocessRunner:
         os._exit(1)
 
     def stop(self) -> None:
-        """Stop the binary, killing it on timeout; a no-op when not started."""
+        """Stop the binary, killing it on timeout, and remove its config."""
         self._stopping.set()
         if self._handle is not None:
             logger.info("Stopping %s (%d)", self.identity, self._handle.pid)
@@ -154,6 +166,15 @@ class SubprocessRunner:
                 self._handle.kill()
                 self._handle.wait()
         self._handle = None
+        shutil.rmtree(self.config_path.parent, ignore_errors=True)
+
+    def is_ready(self, port: int) -> bool:
+        """Return whether the binary runs and accepts connections on `port`.
+
+        Raises if it exited, as nothing restarts it.
+        """
+        self._raise_if_exited()
+        return self.is_alive() and self.is_listening(port)
 
     def is_alive(self) -> bool:
         """Return whether the binary is running right now."""

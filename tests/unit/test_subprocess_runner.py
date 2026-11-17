@@ -42,7 +42,7 @@ def _runner(tmp_path: pathlib.Path, script: str) -> SubprocessRunner:
 def test_actor_exits_when_its_binary_exits_unasked(
     tmp_path: pathlib.Path, exits: Exits
 ) -> None:
-    _runner(tmp_path, "exit 3").start(tmp_path / "config.toml", dict(os.environ))
+    _runner(tmp_path, "exit 3").start("", {})
 
     assert exits.done.wait(timeout=10)
     assert exits.codes == [1]
@@ -52,7 +52,7 @@ def test_actor_stays_when_its_binary_is_stopped(
     tmp_path: pathlib.Path, exits: Exits
 ) -> None:
     runner = _runner(tmp_path, "exec sleep 60")
-    runner.start(tmp_path / "config.toml", dict(os.environ))
+    runner.start("", {})
     runner.stop()
 
     assert not exits.done.wait(timeout=1)
@@ -64,7 +64,7 @@ from polars_nanook_ray.identity import WorkerId
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 runner = SubprocessRunner(sys.argv[1], WorkerId.of("a" * 56, 0))
-runner.start(pathlib.Path(sys.argv[2]), dict(os.environ))
+runner.start("", {})
 print(runner.pid(), flush=True)
 sys.stdin.read()
 """
@@ -122,7 +122,7 @@ def test_binary_starts_without_prctl(
     monkeypatch.setattr(runner_module.ctypes, "CDLL", lambda *_, **__: object())
     runner = _runner(tmp_path, "exec sleep 60")
 
-    runner.start(tmp_path / "config.toml", dict(os.environ))
+    runner.start("", {})
     try:
         assert runner.is_alive()
     finally:
