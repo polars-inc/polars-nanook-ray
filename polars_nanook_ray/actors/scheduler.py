@@ -4,7 +4,7 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.runtimes import resolve_runner
+from polars_nanook_ray.actors.runtimes import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -46,15 +46,10 @@ class PolarsSchedulerActor:
 
         name = resolve_scheduler_name()
         self._config_path: pathlib.Path = _resolve_config_path(name)
-        self._runner = resolve_runner(
+        self._runner = SubprocessRunner(
             config.runtime,
             name,
             config.instance_name(name),
-            cpus=config.scheduler.cpus_hint,
-            memory=config.scheduler.memory_hint,
-            mounts_rw=config.config_paths_rw_scheduler(),
-            mounts_ro={self._config_path.parent, *config.config_paths_ro()},
-            ports=config.config_ports_scheduler(),
         )
 
         self.scheduler_host: str = self._runner.host
@@ -142,13 +137,13 @@ class PolarsSchedulerActor:
 
     def get_client_addr(self) -> str:
         """Return the URI queries should be submitted to."""
-        host = self.config_cluster.runtime.scheduler_host or self.scheduler_host
+        host = self.scheduler_host
         port = self.config_cluster.scheduler.client_port
         return f"{host}:{port}"
 
     def get_dashboard_addr(self) -> str | None:
         """Return the observatory dashboard URL."""
-        host = self.config_cluster.runtime.scheduler_host or self.scheduler_host
+        host = self.scheduler_host
         port = self.config_cluster.scheduler.observatory.rest_port
         return (
             f"http://{host}:{port}"

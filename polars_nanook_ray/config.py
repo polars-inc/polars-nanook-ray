@@ -4,7 +4,10 @@ import socket
 import typing
 
 import toml
-from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+# the scaler HTTP server binds here, on the scheduler node, and the scheduler calls it
+SCALER_HOST = "127.0.0.1"
 
 
 def _instance_name(*parts: str) -> str:
@@ -12,8 +15,6 @@ def _instance_name(*parts: str) -> str:
 
 
 def _resolve_absolute_path(path: str) -> pathlib.Path:
-    # lexically, as following symlinks would mount paths elsewhere in the containers
-    # than where the binary looks for them
     return pathlib.Path(os.path.normpath(pathlib.Path(path).expanduser().absolute()))
 
 
@@ -57,9 +58,6 @@ class AbsLocationConfig(BaseModel):
         description="Whether the object-store client may issue delete requests.",
     )
 
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return set()
-
     def config(self) -> dict:
         section = self.model_dump(
             exclude={"storage_type", "options"}, exclude_none=True
@@ -97,9 +95,6 @@ class GcsLocationConfig(BaseModel):
         default=None,
         description="Whether the object-store client may issue delete requests.",
     )
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return set()
 
     def config(self) -> dict:
         section = self.model_dump(
@@ -143,9 +138,6 @@ class S3LocationConfig(BaseModel):
         description="Whether the object-store client may issue delete requests.",
     )
 
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return set()
-
     def config(self) -> dict:
         section = self.model_dump(
             exclude={"storage_type", "options"}, exclude_none=True
@@ -158,9 +150,6 @@ class LocalStorageConfig(BaseModel):
     storage_type: typing.Literal["local"] = "local"
 
     path: str = Field(description="Absolute path on the local filesystem.")
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return {_resolve_absolute_path(self.path)}
 
     def config(self) -> dict:
         return {self.storage_type: self.model_dump(exclude={"storage_type"})}
@@ -176,9 +165,6 @@ class SharedFilesystemStorageConfig(BaseModel):
             "driver mount). Must be reachable at the same path on every node."
         ),
     )
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return {_resolve_absolute_path(self.path)}
 
     def config(self) -> dict:
         return {self.storage_type: self.model_dump(exclude={"storage_type"})}
@@ -270,12 +256,6 @@ class PolarsEnterpriseLicenseConfig(BaseModel):
         ),
     )
 
-    def config_paths_ro(self) -> set[pathlib.Path]:
-        return {_resolve_absolute_path(self.license_path)}
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return set()
-
     def config(self) -> dict:
         return {self.license_type: self.model_dump(exclude={"license_type"})}
 
@@ -287,12 +267,6 @@ class PolarsLicenseServerConfig(BaseModel):
     license_type: typing.Literal["license_server"] = "license_server"
 
     uri: str = Field(description="License server URI.")
-
-    def config_paths_ro(self) -> set[pathlib.Path]:
-        return set()
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return set()
 
     def config(self) -> dict:
         return {self.license_type: self.model_dump(exclude={"license_type"})}
@@ -313,12 +287,6 @@ class PolarsServiceAccountLicenseConfig(BaseModel):
             "Directory containing TLS certificates for control-plane communication."
         ),
     )
-
-    def config_paths_ro(self) -> set[pathlib.Path]:
-        return set()
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return {_resolve_absolute_path(self.cert_dir)}
 
     def config(self) -> dict:
         return {
@@ -347,12 +315,6 @@ class PolarsTlsConnectionConfig(BaseModel):
     private_key_file: str = Field(
         description="Absolute path to the PEM private key file.",
     )
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        return {
-            _resolve_absolute_path(self.certificate_key_file).parent,
-            _resolve_absolute_path(self.private_key_file).parent,
-        }
 
     def config(self) -> dict:
         return {"tls": self.model_dump()}
@@ -413,18 +375,6 @@ class PolarsObservatoryConfig(BaseModel):
             "API/dashboard service. Disabled if unset."
         ),
     )
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        if not self.enabled:
-            return set()
-
-        paths = {_resolve_absolute_path(self.database_path).parent}
-        if self.database_export:
-            paths.add(_resolve_absolute_path(self.database_export).parent)
-        if self.rest_connection is not None:
-            paths |= self.rest_connection.config_paths_rw()
-
-        return paths
 
     def config(self) -> dict:
         d: dict = {"enabled": self.enabled}
@@ -523,9 +473,7 @@ class PolarsSchedulerConfig(BaseModel):
         default=None,
         description=(
             "Memory limit, in bytes, enforced by our binary via cgroups. Requires a "
-            "delegated cgroup subtree, which a plain shell session does not provide. "
-            "The containers of the Docker runtime mount cgroups read-only, so there "
-            "`memory_hint` is the limit that applies instead."
+            "delegated cgroup subtree, which a plain shell session does not provide."
         ),
     )
 
@@ -632,16 +580,6 @@ class PolarsSchedulerConfig(BaseModel):
             },
         }
 
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        paths = self.observatory.config_paths_rw()
-
-        if self.anonymous_result is not None:
-            paths |= self.anonymous_result.config_paths_rw()
-        if self.connection is not None:
-            paths |= self.connection.config_paths_rw()
-
-        return paths
-
     def config_license(self, license_: PolarsLicenseConfig) -> dict:
         return license_.config()
 
@@ -712,9 +650,7 @@ class PolarsWorkerConfig(BaseModel):
         default=None,
         description=(
             "Memory limit, in bytes, enforced by our binary via cgroups. Requires a "
-            "delegated cgroup subtree, which a plain shell session does not provide. "
-            "The containers of the Docker runtime mount cgroups read-only, so there "
-            "`memory_hint` is the limit that applies instead."
+            "delegated cgroup subtree, which a plain shell session does not provide."
         ),
     )
 
@@ -760,16 +696,6 @@ class PolarsWorkerConfig(BaseModel):
         ),
     )
 
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        paths = {_resolve_absolute_path(self.temporary_data_dir)}
-
-        if self.shuffle_data is not None:
-            paths |= self.shuffle_data.config_paths_rw()
-        if self.checkpoint_location is not None:
-            paths |= self.checkpoint_location.config_paths_rw()
-
-        return paths
-
     def config_license(self, license_: PolarsLicenseConfig) -> dict | None:
         if isinstance(license_, PolarsServiceAccountLicenseConfig):
             return None
@@ -806,11 +732,6 @@ class PolarsSubprocessConfig(BaseModel):
 
     runtime_type: typing.Literal["subprocess"] = "subprocess"
 
-    # address the driver reaches the scheduler on; None for where the binary runs
-    scheduler_host: typing.ClassVar[str | None] = None
-    # address the scheduler reaches the scaler HTTP server on
-    scaler_host: typing.ClassVar[str] = "127.0.0.1"
-
     binary_path: str | None = Field(
         default=None,
         description=(
@@ -836,66 +757,12 @@ class PolarsSubprocessConfig(BaseModel):
             )
         return self
 
-    def _worker_port_offset(self, worker_id: int) -> int:
-        """Return the offset added to the ports of the worker given."""
-        return worker_id * 2 if self.single_host_cluster else 0
-
-
-class PolarsDockerConfig(BaseModel):
-    """Run the binary in a Docker container, started by the actor."""
-
-    model_config = ConfigDict(frozen=True)
-
-    runtime_type: typing.Literal["docker"] = "docker"
-
-    # the driver reaches the scheduler on its ports published on the host loopback
-    scheduler_host: typing.ClassVar[str | None] = "127.0.0.1"
-    # the scheduler reaches the scaler on the host, which containers resolve this to
-    scaler_host: typing.ClassVar[str] = "host.docker.internal"
-
-    image: str = Field(
-        description=(
-            "Image running the binary as its entrypoint; see the Dockerfiles under "
-            "`docker/` for examples to build it."
-        ),
-    )
-    network: str = Field(
-        default="polars-nanook-ray",
-        description="Docker network the containers join, created if missing.",
-    )
-    extra_volume_mounts: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Extra host paths to bind-mount into the containers, for any location "
-            "queries read from or write to that the configuration does not already "
-            "mention."
-        ),
-    )
-
-    def _worker_port_offset(self, worker_id: int) -> int:  # noqa: ARG002
-        """Return the offset added to the ports of the worker given."""
-        # each container has its own network namespace
-        return 0
-
-
-PolarsRuntimeConfig = typing.Annotated[
-    typing.Annotated[PolarsSubprocessConfig, Tag("subprocess")]
-    | typing.Annotated[PolarsDockerConfig, Tag("docker")],
-    Discriminator(
-        lambda v: (
-            v.get("runtime_type", "subprocess")
-            if isinstance(v, dict)
-            else v.runtime_type
-        )
-    ),
-]
-
 
 class PolarsRayClusterConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     # runtime configuration
-    runtime: PolarsRuntimeConfig = Field(
+    runtime: PolarsSubprocessConfig = Field(
         default_factory=PolarsSubprocessConfig,
         description="How and where the scheduler and worker binaries run.",
     )
@@ -984,7 +851,7 @@ class PolarsRayClusterConfig(BaseModel):
 
     def _worker_port_offset(self, worker_id: int) -> int:
         """Per-worker port offset to avoid collisions when co-located on one host."""
-        return self.runtime._worker_port_offset(worker_id)
+        return worker_id * 2 if self.runtime.single_host_cluster else 0
 
     def _port_availability(
         self,
@@ -994,10 +861,7 @@ class PolarsRayClusterConfig(BaseModel):
         check_scaler: bool,
     ) -> None:
         """Raise if needed ports are already taken (only meaningful on single-host)."""
-        if (
-            not hasattr(self.runtime, "single_host_cluster")
-            or not self.runtime.single_host_cluster
-        ):
+        if not self.runtime.single_host_cluster:
             return
 
         ports: dict[str, int] = {}
@@ -1035,23 +899,6 @@ class PolarsRayClusterConfig(BaseModel):
             msg = f"Port(s) already in use, aborting: {', '.join(taken)}"
             raise RuntimeError(msg)
 
-    def config_paths_ro(self) -> set[pathlib.Path]:
-        """Return every filesystem path the scheduler and workers only read."""
-        return self.license.config_paths_ro()
-
-    def config_paths_rw_scheduler(self) -> set[pathlib.Path]:
-        """Return every filesystem path the scheduler reads or writes."""
-        return self.scheduler.config_paths_rw() | self.license.config_paths_rw()
-
-    def config_ports_scheduler(self) -> set[int]:
-        """Return the scheduler ports reached from the host."""
-        ports = {self.scheduler.client_port}
-
-        if self.scheduler.observatory.enabled:
-            ports.add(self.scheduler.observatory.rest_port)
-
-        return ports
-
     def config_scheduler(self, scheduler_host: str) -> str:
         """Render the TOML configuration of the scheduler node."""
         doc: dict = {
@@ -1073,22 +920,13 @@ class PolarsRayClusterConfig(BaseModel):
             ),
             "observatory": self.scheduler.observatory.config(),
             "monitoring": self.monitoring.config(),
-            "scaling": self.scheduler.scaling.config(self.runtime.scaler_host),
+            "scaling": self.scheduler.scaling.config(SCALER_HOST),
         }
 
         if self.lineage is not None and (lineage := self.lineage.config()):
             doc["lineage"] = lineage
 
         return toml.dumps(doc)
-
-    def config_paths_rw_worker(self) -> set[pathlib.Path]:
-        """Return every filesystem path the worker reads or writes."""
-        paths = self.worker.config_paths_rw() | self.license.config_paths_rw()
-
-        if self.scheduler.anonymous_result is not None:
-            paths |= self.scheduler.anonymous_result.config_paths_rw()
-
-        return paths
 
     def config_worker(
         self,
@@ -1138,7 +976,7 @@ class PolarsRayLicenseServerConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     # runtime configuration
-    runtime: PolarsRuntimeConfig = Field(
+    runtime: PolarsSubprocessConfig = Field(
         default_factory=lambda: PolarsSubprocessConfig(
             binary_path="polars-nanook-license-server"
         ),
@@ -1201,28 +1039,10 @@ class PolarsRayLicenseServerConfig(BaseModel):
     @model_validator(mode="after")
     def _binary_path_required(self) -> "PolarsRayLicenseServerConfig":
         """Raise if the binary is missing, as no package provides it."""
-        if (
-            isinstance(self.runtime, PolarsSubprocessConfig)
-            and self.runtime.binary_path is None
-        ):
+        if self.runtime.binary_path is None:
             msg = "The license server subprocess runtime requires a binary."
             raise ValueError(msg)
         return self
-
-    def config_paths_ro(self) -> set[pathlib.Path]:
-        """Return every filesystem path the license server only reads."""
-        return {
-            _resolve_absolute_path(self.license_path),
-            _resolve_absolute_path(self.tls_bundle_path),
-        }
-
-    def config_paths_rw(self) -> set[pathlib.Path]:
-        """Return every filesystem path the license server writes."""
-        return {_resolve_absolute_path(self.report_dir)}
-
-    def config_ports(self) -> set[int]:
-        """Return the license server ports reached from the host."""
-        return {self.http_port}
 
     def config(self) -> dict[str, str]:
         env = {

@@ -18,7 +18,7 @@ uv pip install polars-nanook-ray
 It will also install `ray`, and `polars-nanook-compute` which runs the scheduler
 and workers, as dependencies. The latter pins the Polars version of the
 environment, and is only installed on Linux, the only platform it is released
-for; elsewhere, run the scheduler and workers [in containers](#running-in-containers).
+for: the Ray nodes running the scheduler and workers need to be Linux hosts.
 Note that a few things need to be set up for the Polars Nanook cluster to
 function properly:
 
@@ -162,8 +162,7 @@ and only enforced on rescaling, where a `POST /scale_to` count outside them is
 clamped.
 Requesting more workers is done via the client: `.distributed(min_workers=X)`.
 
-The HTTP server is unauthenticated and binds `127.0.0.1`, or the Docker network
-gateway when the binaries run in containers. It accepts only
+The HTTP server is unauthenticated and binds `127.0.0.1`. It accepts only
 `application/json` bodies, and ignores worker names that are not worker actors.
 
 > [!NOTE]
@@ -231,59 +230,14 @@ Four parameters control resource usage:
 
 - `cpus_hint` / `memory_hint`: forwarded verbatim as Ray's own `num_cpus` /
   `memory` actor options, and used by Ray for bin-packing. Not enforced at the
-  OS level for subprocesses, but enforced as `--cpus` / `--memory` for
-  containers (see [Running in containers](#running-in-containers)).
+  OS level.
 - `cpu_reserved`: a scheduling/accounting hint consumed internally by the binary
   for task placement and reported to the observatory; never enforced.
 - `memory_limit`: enforced by the binary itself via cgroups; but only if a
-  _delegated cgroup subtree is made available_. The containers started by this
-  package mount cgroups read-only, so there `memory_hint` is the limit that
-  applies.
+  _delegated cgroup subtree is made available_.
 
 A plain session/SSH shell does not provide one (everything lives flatly in one
 cgroup), so `memory_limit` fails outright with the following message:
 
 > Ensure cgroup is mounted and subgroups are delegated, or disable the memory
 > limit in the configuration file.
-
-## Running in containers
-
-The binaries can run in Docker containers rather than as subprocesses of the
-actors, for two reasons:
-
-- Resource enforcement: `cpus_hint` / `memory_hint` are passed to Docker as
-  `--cpus` / `--memory`, which it enforces, whereas a plain session or SSH shell
-  gives the binary no delegated cgroup subtree for its own `memory_limit`.
-- Running the binary where it is not native: the binary is released for Linux
-  only.
-
-Container images including the binaries still need to be built. Minimal
-examples are provided in the `docker/` folder, and a recipe in the `Makefile`:
-
-```sh
-make image COMPUTE_VERSION=<x.x.x> PYTHON_VERSION=<x.y>
-```
-
-> [!NOTE]
-> Match `COMPUTE_VERSION` and `PYTHON_VERSION` to the environment the queries
-> are sent from: `polars-nanook-compute` pins the Polars version it runs, and
-> Python functions in queries are pickled for the Python version they run on.
-
-Then select the container runtime, naming that image:
-
-```py
-from polars_nanook_ray.config import PolarsDockerConfig, PolarsRayClusterConfig
-
-config = PolarsRayClusterConfig(
-    runtime=PolarsDockerConfig(image="polars-nanook-ray:latest"),  # Makefile tag
-    ...
-)
-```
-
-Everything else, `PolarsRayCluster` and `RayClusterContext` included, remains
-identical. `single_host_cluster` does not apply: each container has its own
-network namespace, so worker ports never collide.
-
-The license server runs the same way, from its own image built with
-`make image-license-server`. Clusters then reach it by container name, so they
-have to run in containers on the same Docker network.

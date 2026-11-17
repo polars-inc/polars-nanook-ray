@@ -32,19 +32,11 @@ defaults:
 
 jobs:
   integration:
-    name: integration (${{ matrix.runtime }})
+    # name kept from the former runtime matrix, which required checks refer to
+    name: integration (subprocess)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        # no docker run on github's macos runners: ray only ships arm64 wheels for
-        # macos, and the arm64 runners lack the nested virtualization docker needs
-        # running our docker tests under linux, better than nothing
-        runtime:
-          - docker
-          - subprocess
     timeout-minutes: 15
     steps:
       # https://github.com/marketplace/actions/checkout
@@ -79,17 +71,9 @@ jobs:
             uv pip install "polars-nanook-compute==$COMPUTE_VERSION"
           fi
 
-      - name: Build the image
-        if: ${{ matrix.runtime == 'docker' }}
-        run: |
-          source .venv/bin/activate
-          make image COMPUTE_VERSION=$(python -c "import importlib.metadata; print(importlib.metadata.version('polars-nanook-compute'))")
-
       - name: Run integration tests
         run: |
-          make "test-$RUNTIME"
-        env:
-          RUNTIME: ${{ matrix.runtime }}
+          make test
         timeout-minutes: 10
 
   integration-license-server:

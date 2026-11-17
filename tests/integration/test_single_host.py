@@ -1,14 +1,8 @@
 import socket
 
-import pytest
 import ray
 
-from .conftest import USE_DOCKER, RayClusterFactory
-
-pytestmark = pytest.mark.skipif(
-    USE_DOCKER,
-    reason="containers get no port offsets",
-)
+from .conftest import RayClusterFactory
 
 
 def _is_open(host: str, port: int) -> bool:

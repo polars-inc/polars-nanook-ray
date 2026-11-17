@@ -5,7 +5,7 @@ import urllib.request
 
 import ray
 
-from polars_nanook_ray.actors.runtimes import resolve_runner
+from polars_nanook_ray.actors.runtimes import SubprocessRunner
 from polars_nanook_ray.actors.utils import _handle_sigterm
 from polars_nanook_ray.config import PolarsRayLicenseServerConfig
 
@@ -26,15 +26,10 @@ class PolarsLicenseServerActor:
         self.config_service: PolarsRayLicenseServerConfig = config
 
         name = resolve_license_server_name()
-        self._runner = resolve_runner(
+        self._runner = SubprocessRunner(
             config.runtime,
             name,
             config.instance_name(name),
-            cpus=config.cpus_hint,
-            memory=config.memory_hint,
-            mounts_rw=config.config_paths_rw(),
-            mounts_ro=config.config_paths_ro(),
-            ports=config.config_ports(),
         )
 
         self.host: str = self._runner.host
@@ -89,7 +84,7 @@ class PolarsLicenseServerActor:
 
     def get_metrics_addr(self) -> str:
         """Return the URL Prometheus gauges can be scraped from."""
-        host = self.config_service.runtime.scheduler_host or self.host
+        host = self.host
         port = self.config_service.http_port
         return f"http://{host}:{port}/metrics"
 
