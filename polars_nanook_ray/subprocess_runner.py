@@ -47,11 +47,9 @@ class SubprocessRunner:
         self,
         binary_path: str | None,
         instance_id: str,
-        name: str,
     ) -> None:
         self.binary_path = binary_path
         self.instance_id = instance_id
-        self.name = name
 
         self._handle: subprocess.Popen[bytes] | None = None
         self._stopping = threading.Event()
@@ -92,11 +90,11 @@ class SubprocessRunner:
         self._stopping.clear()
         args = _service_args(config_path)
         self._handle = subprocess.Popen([*self.command, *args], env=env)
-        logger.info("Process ID of %s: %d", self.name, self._handle.pid)
+        logger.info("Process ID of %s: %d", self.instance_id, self._handle.pid)
         threading.Thread(
             target=self._exit_with_binary,
             args=(self._handle,),
-            name=f"{self.name}-watch",
+            name=f"{self.instance_id}-watch",
             daemon=True,
         ).start()
 
@@ -111,7 +109,7 @@ class SubprocessRunner:
             return
         logger.error(
             "%s (%d) exited with code %d; exiting its actor",
-            self.name,
+            self.instance_id,
             handle.pid,
             exit_code,
         )
@@ -122,7 +120,7 @@ class SubprocessRunner:
         """Stop the binary, killing it on timeout; a no-op when not started."""
         self._stopping.set()
         if self._handle is not None:
-            logger.info("Stopping %s (%d)", self.name, self._handle.pid)
+            logger.info("Stopping %s (%d)", self.instance_id, self._handle.pid)
             self._handle.terminate()
             try:
                 self._handle.wait(timeout=10)

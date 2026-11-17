@@ -43,7 +43,6 @@ class PolarsWorkerActor:
         self._runner = SubprocessRunner(
             config.binary_path,
             self.worker_name,
-            config.instance_name(self.worker_name),
         )
 
         self.worker_host: str = self._runner.host
