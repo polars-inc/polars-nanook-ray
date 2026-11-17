@@ -1,5 +1,5 @@
-from polars_nanook_ray.actors.engine_instance_id import EngineInstanceId
 from polars_nanook_ray.actors.scheduler import _resolve_worker_actor_names
+from polars_nanook_ray.engine_instance_id import EngineInstanceId
 
 
 def test_each_start_gets_its_own_engine_instance_id() -> None:

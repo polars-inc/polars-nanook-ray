@@ -10,7 +10,7 @@ import sysconfig
 import psutil
 import toml
 
-from polars_nanook_ray.actors.engine_instance_id import EngineInstanceId
+from polars_nanook_ray.engine_instance_id import EngineInstanceId
 
 logger = logging.getLogger(__name__)
 

@@ -4,9 +4,6 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.engine_instance_id import EngineInstanceId
-from polars_nanook_ray.actors.ports import resolve_ports
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -23,6 +20,9 @@ from polars_nanook_ray.actors.worker import (
     resolve_worker_name,
 )
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.engine_instance_id import EngineInstanceId
+from polars_nanook_ray.ports import resolve_ports
+from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 if typing.TYPE_CHECKING:
     import pathlib

@@ -2,7 +2,7 @@ import socket
 
 import pytest
 
-from polars_nanook_ray.actors.ports import PortInUseError, resolve_ports
+from polars_nanook_ray.ports import PortInUseError, resolve_ports
 
 
 def test_unset_ports_are_distinct_and_bindable() -> None:
