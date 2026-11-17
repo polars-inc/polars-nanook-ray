@@ -5,7 +5,10 @@ import typing
 import ray
 
 from polars_nanook_ray.actors.ports import resolve_ports
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
+from polars_nanook_ray.actors.subprocess_runner import (
+    SubprocessRunner,
+    is_engine_instance_of,
+)
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -34,6 +37,18 @@ logger = logging.getLogger(__name__)
 
 def resolve_scheduler_name() -> str:
     return SCHEDULER_NAME_PREFIX
+
+
+def _resolve_worker_actor_names(
+    instance_ids: set[str] | None, worker_names: set[str]
+) -> set[str] | None:
+    """Return the worker actors the engine instance IDs or actor names given are."""
+    names = {
+        name
+        for name in worker_names
+        if any(is_engine_instance_of(i, name) for i in instance_ids or ())
+    }
+    return names or None
 
 
 @ray.remote
@@ -177,12 +192,13 @@ class PolarsSchedulerActor:
             and `max_workers`. If neither `delete` nor `keep` is given, random workers
             are removed.
         delete
-            Set of worker instances to terminate. Applied before `keep`. Names that
-            are not worker actors are ignored.
-        keep
-            Set of worker instances to keep running, while terminating all the others
-            not already removed via `delete`. Names that are not worker actors are
+            Set of worker instances to terminate, as engine instance IDs or actor
+            names. Applied before `keep`. Names that are not worker actors are
             ignored.
+        keep
+            Set of worker instances to keep running, as engine instance IDs or actor
+            names, while terminating all the others not already removed via
+            `delete`. Names that are not worker actors are ignored.
 
         """
         min_workers = self.config_cluster.min_workers
@@ -206,8 +222,8 @@ class PolarsSchedulerActor:
             self.config_cluster.cluster_id, WORKER_NAME_PREFIX
         )
 
-        _delete = (delete or set()) & worker_names or None
-        _keep = (keep or set()) & worker_names or None
+        _delete = _resolve_worker_actor_names(delete, worker_names)
+        _keep = _resolve_worker_actor_names(keep, worker_names)
 
         if len(worker_names) < num_workers:
             # offset the id used by each worker to avoid collisions with running worker
