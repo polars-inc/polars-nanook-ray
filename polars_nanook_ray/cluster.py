@@ -1,9 +1,10 @@
+import contextlib
 import logging
 import time
 import typing
 
 import ray
-from ray.exceptions import GetTimeoutError
+from ray.exceptions import GetTimeoutError, RayError
 
 from polars_nanook_ray.actors import (
     PolarsScalerActor,
@@ -321,6 +322,14 @@ class PolarsRayCluster:
                     self.config.actor_response_timeout,
                 )
                 self._scaler_actor = None
+
+        if self._scheduler_actor is not None:
+            # or the scheduler refills the workers stopped below
+            with contextlib.suppress(RayError, GetTimeoutError):
+                ray.get(
+                    self._scheduler_actor.stop_reconciling.remote(),
+                    timeout=self.config.actor_response_timeout,
+                )
 
         self._worker_actors = resolve_actor_handles(
             list_worker_names(self.config.cluster_id), self.config.cluster_id

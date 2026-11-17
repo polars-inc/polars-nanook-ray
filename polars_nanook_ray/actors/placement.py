@@ -9,7 +9,7 @@ if typing.TYPE_CHECKING:
 
 WORKER_NAME_PREFIX = "worker"
 
-# keeps worker container names within the 63 characters of a DNS label
+# keeps worker names short; a prefix of a node ID is unique in practice
 NODE_ID_LENGTH = 12
 
 logger = logging.getLogger(__name__)
@@ -115,3 +115,50 @@ def plan_workers(
         )
 
     return slots
+
+
+MAX_REFILL_BACKOFF = 600.0
+
+
+class WorkerPoolReconciler:
+    """Keep the worker pool at its target size by refilling empty slots.
+
+    Ray restarts a worker actor within its restart limit, but not past it, and not
+    once its node is gone, as workers are pinned to their node. Each `reconcile`
+    starts workers on free slots, a new node's included, for the pool to reach the
+    target again. A slot refilled again soon after is backed off exponentially, so
+    a worker that keeps failing is not recreated in a tight loop.
+    """
+
+    def __init__(
+        self,
+        interval: float,
+        plan: typing.Callable[[int, set[str]], list[WorkerSlot]],
+        start: typing.Callable[[WorkerSlot], object],
+        running: typing.Callable[[], set[str]],
+    ) -> None:
+        self.interval = interval
+        self._plan = plan
+        self._start = start
+        self._running = running
+        # slot name -> (refills in a row, earliest time to refill it again)
+        self._backoff: dict[str, tuple[int, float]] = {}
+
+    def reconcile(self, target: int, now: float) -> list[WorkerSlot]:
+        """Start workers on free slots up to `target`; return the slots started."""
+        running = self._running()
+        for name, (_, retry_at) in list(self._backoff.items()):
+            if name in running and now >= retry_at:
+                del self._backoff[name]  # stayed up through its backoff
+
+        started = []
+        for slot in self._plan(target, running):
+            refills, retry_at = self._backoff.get(slot.name, (0, 0.0))
+            if now < retry_at:
+                continue
+            logger.warning("Refilling worker slot %s", slot.name)
+            self._start(slot)
+            delay = min(self.interval * 2**refills, MAX_REFILL_BACKOFF)
+            self._backoff[slot.name] = (refills + 1, now + delay)
+            started.append(slot)
+        return started

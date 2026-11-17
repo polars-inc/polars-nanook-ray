@@ -762,6 +762,15 @@ class PolarsRayClusterConfig(BaseModel):
         default=3,
         description="Ray actor restart limit for workers (-1 = unlimited).",
     )
+    worker_reconcile_interval: float = Field(
+        default=10.0,
+        ge=0,
+        description=(
+            "Seconds between checks that refill the worker pool up to `num_workers`, "
+            "replacing workers past their restart limit or on lost nodes, and filling "
+            "new nodes; 0 disables them."
+        ),
+    )
 
     # native binary configuration
     cluster_id: str = Field(
