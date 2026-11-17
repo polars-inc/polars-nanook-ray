@@ -38,7 +38,6 @@ class PolarsWorkerActor:
     ) -> None:
         self.config_cluster: PolarsRayClusterConfig = config
 
-        self.slot = slot
         self.worker_name: str = slot.name
         self.scheduler_host = scheduler_host
 

@@ -8,8 +8,10 @@ import ray
 
 from polars_nanook_ray.actors.placement import (
     WorkerPoolReconciler,
+    WorkerSlot,
     list_worker_names,
     plan_workers,
+    warn_no_room,
 )
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
@@ -76,17 +78,25 @@ class PolarsSchedulerActor:
         if config.worker_reconcile_interval > 0:
             self._reconciler = WorkerPoolReconciler(
                 config.worker_reconcile_interval,
-                plan=lambda target, running: plan_workers(config, target, running),
-                start=lambda slot: start_worker(config, slot, self.scheduler_host),
-                running=lambda: list_worker_names(config.cluster_id),
+                plan=self._plan_workers,
+                start=self._start_worker,
+                running=self._list_workers,
             )
             threading.Thread(
                 target=self._reconcile_workers, name="reconcile-workers", daemon=True
             ).start()
 
+    def _plan_workers(self, target: int, running: set[str]) -> list[WorkerSlot]:
+        return plan_workers(self.config_cluster, target, running)
+
+    def _start_worker(self, slot: WorkerSlot) -> None:
+        start_worker(self.config_cluster, slot, self.scheduler_host)
+
+    def _list_workers(self) -> set[str]:
+        return list_worker_names(self.config_cluster.cluster_id)
+
     def _reconcile_workers(self) -> None:
-        interval = self.config_cluster.worker_reconcile_interval
-        while not self._reconciling.wait(interval):
+        while not self._reconciling.wait(self._reconciler.interval):
             try:
                 self._reconciler.reconcile(self.num_workers, time.monotonic())
             except Exception:
@@ -139,7 +149,7 @@ class PolarsSchedulerActor:
 
     def stop(self) -> None:
         """Terminate the scheduler process and clean up."""
-        self._reconciling.set()
+        self.stop_reconciling()
         self._runner.stop()
 
         _remove_config(self._config_path)
@@ -229,14 +239,17 @@ class PolarsSchedulerActor:
         # set first, for the reconciler not to refill the workers removed below
         self.num_workers = num_workers
 
-        worker_names = list_worker_names(self.config_cluster.cluster_id)
+        worker_names = self._list_workers()
 
         _delete = _resolve_worker_actor_names(delete, worker_names)
         _keep = _resolve_worker_actor_names(keep, worker_names)
 
         if len(worker_names) < num_workers:
-            for slot in plan_workers(self.config_cluster, num_workers, worker_names):
-                start_worker(self.config_cluster, slot, self.scheduler_host)
+            slots = self._plan_workers(num_workers, worker_names)
+            if len(worker_names) + len(slots) < num_workers:
+                warn_no_room(len(slots), num_workers - len(worker_names))
+            for slot in slots:
+                self._start_worker(slot)
 
         elif len(worker_names) > num_workers:
             if num_workers == 0:

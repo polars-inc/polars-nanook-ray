@@ -325,22 +325,19 @@ class PolarsRayCluster:
 
         if self._scheduler_actor is not None:
             # or the scheduler refills the workers stopped below
-            with contextlib.suppress(RayError, GetTimeoutError):
+            with contextlib.suppress(RayError):
                 ray.get(
                     self._scheduler_actor.stop_reconciling.remote(),
                     timeout=self.config.actor_response_timeout,
                 )
 
-        self._worker_actors = resolve_actor_handles(
+        workers = resolve_actor_handles(
             list_worker_names(self.config.cluster_id), self.config.cluster_id
         )
-        if self._worker_actors:
-            logger.info("Stopping %d worker(s)...", len(self._worker_actors))
-            terminate_actors(
-                list(self._worker_actors.values()),
-                self.config.actor_response_timeout,
-            )
-            self._worker_actors = {}
+        if workers:
+            logger.info("Stopping %d worker(s)...", len(workers))
+            terminate_actors(list(workers.values()), self.config.actor_response_timeout)
+        self._worker_actors = {}
 
         if self._scheduler_actor is not None:
             logger.info("Stopping scheduler...")

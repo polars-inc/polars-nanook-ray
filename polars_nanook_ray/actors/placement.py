@@ -1,4 +1,5 @@
 import dataclasses
+import itertools
 import logging
 import typing
 
@@ -37,21 +38,21 @@ def _node_capacities(
     memory: float,
     workers_per_node: int,
 ) -> dict[str, int]:
-    capacities = {
-        node["NodeID"]: int(
-            min(
-                workers_per_node,
-                _fits(node["Resources"].get("CPU", 0), cpus),
-                _fits(node["Resources"].get("memory", 0), memory),
+    return {
+        node["NodeID"]: capacity
+        for node in nodes
+        if node["Alive"]
+        and node["Resources"].get("CPU", 0) > 0
+        and (
+            capacity := int(
+                min(
+                    workers_per_node,
+                    _fits(node["Resources"]["CPU"], cpus),
+                    _fits(node["Resources"].get("memory", 0), memory),
+                )
             )
         )
-        for node in nodes
-        if node["Alive"] and node["Resources"].get("CPU", 0) > 0
-    }
-    return {
-        node_id: capacity
-        for node_id, capacity in sorted(capacities.items())
-        if capacity > 0
+        > 0
     }
 
 
@@ -67,7 +68,7 @@ def _plan_worker_slots(
         if index < capacities[node_id]
         and (slot := WorkerSlot(node_id, index)).name not in taken
     )
-    return [slot for slot, _ in zip(free, range(count), strict=False)]
+    return list(itertools.islice(free, max(count, 0)))
 
 
 def list_worker_names(namespace: str) -> set[str]:
@@ -90,7 +91,7 @@ def plan_workers(
     `running` holds the names of the live workers, as `list_worker_names` returns
     them. Each slot is on an alive node with CPUs, at most `workers_per_node` per
     node and no more than the node's CPUs and memory fit, and is not taken by a
-    running worker. Returns fewer slots, with a warning, when the nodes are full.
+    running worker. Returns fewer slots when the nodes are full; callers report it.
     """
     missing = target - len(running)
     if missing <= 0:
@@ -102,19 +103,16 @@ def plan_workers(
         config.worker.memory_hint,
         config.workers_per_node,
     )
-    slots = _plan_worker_slots(capacities, running, missing)
+    return _plan_worker_slots(capacities, running, missing)
 
-    if len(slots) < missing:
-        logger.warning(
-            "Only room for %d of the %d workers requested on %d eligible node(s), "
-            "with %d worker(s) running",
-            len(slots),
-            missing,
-            len(capacities),
-            len(running),
-        )
 
-    return slots
+def warn_no_room(started: int, missing: int) -> None:
+    logger.warning(
+        "Only room for %d of the %d missing workers; add nodes or raise "
+        "workers_per_node",
+        started,
+        missing,
+    )
 
 
 MAX_REFILL_BACKOFF = 600.0
@@ -143,6 +141,7 @@ class WorkerPoolReconciler:
         self._running = running
         # slot name -> (refills in a row, earliest time to refill it again)
         self._backoff: dict[str, tuple[int, float]] = {}
+        self._shortfall = 0
 
     def reconcile(self, target: int, now: float) -> list[WorkerSlot]:
         """Start workers on free slots up to `target`; return the slots started."""
@@ -151,8 +150,14 @@ class WorkerPoolReconciler:
             if name in running and now >= retry_at:
                 del self._backoff[name]  # stayed up through its backoff
 
+        slots = self._plan(target, running)
+        shortfall = max(target - len(running) - len(slots), 0)
+        if shortfall != self._shortfall and shortfall > 0:
+            warn_no_room(len(slots), target - len(running))
+        self._shortfall = shortfall
+
         started = []
-        for slot in self._plan(target, running):
+        for slot in slots:
             refills, retry_at = self._backoff.get(slot.name, (0, 0.0))
             if now < retry_at:
                 continue
