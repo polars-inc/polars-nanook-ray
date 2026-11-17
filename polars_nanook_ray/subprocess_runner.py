@@ -20,11 +20,6 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _service_args(config_path: str | pathlib.Path) -> list[str]:
-    """Return the arguments running the scheduler or worker service of a config."""
-    return ["service", "--config-path", str(config_path)]
-
-
 COMPUTE_SCRIPT = "polars-nanook-compute"
 
 _PR_SET_PDEATHSIG = 1
@@ -42,7 +37,13 @@ def _die_with_this_process() -> typing.Callable[[], None] | None:
     if sys.platform != "linux":
         return None
 
-    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+    except (AttributeError, OSError):  # e.g. a statically linked Python
+        logger.warning(
+            "Cannot find prctl: the binary will outlive this process if it is killed"
+        )
+        return None
     parent = os.getpid()
 
     def preexec() -> None:
@@ -110,9 +111,10 @@ class SubprocessRunner:
     def start(self, config_path: pathlib.Path, env: dict[str, str]) -> None:
         """Launch the service of the config given, without waiting for it."""
         self._stopping.clear()
-        args = _service_args(config_path)
         self._handle = subprocess.Popen(
-            [*self.command, *args], env=env, preexec_fn=_die_with_this_process()
+            [*self.command, "service", "--config-path", str(config_path)],
+            env=env,
+            preexec_fn=_die_with_this_process(),
         )
         logger.info("Process ID of %s: %d", self.identity, self._handle.pid)
         threading.Thread(

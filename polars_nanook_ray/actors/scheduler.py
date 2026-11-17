@@ -84,7 +84,7 @@ class PolarsSchedulerActor:
         self._stop_scheduler()
 
     def _stop_scheduler(self) -> None:
-        """Terminate the scheduler process and clean up, leaving the workers."""
+        """Terminate the scheduler process and clean up; Ray then stops its workers."""
         self._pool.halt()
         self._runner.stop()
 

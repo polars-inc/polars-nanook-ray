@@ -121,9 +121,7 @@ class PolarsWorkerActor:
 class RayWorkers:
     """The worker actors of one cluster, spread by Ray over the nodes with room."""
 
-    def __init__(
-        self, config: PolarsRayClusterConfig, scheduler_host: str | None = None
-    ) -> None:
+    def __init__(self, config: PolarsRayClusterConfig, scheduler_host: str) -> None:
         self._config = config
         self._scheduler_host = scheduler_host
         # Ray destroys an owned actor once its owner holds no handle to it
@@ -146,10 +144,6 @@ class RayWorkers:
         over the nodes as best it can; until one has room, it waits, as demand Ray's
         autoscaler can add nodes for.
         """
-        if self._scheduler_host is None:
-            msg = "Cannot start workers without the scheduler's host"
-            raise RuntimeError(msg)
-
         self._started[worker] = PolarsWorkerActor.options(  # type: ignore[attr-defined]
             name=worker.actor_name,
             namespace=self._config.cluster_id,
@@ -167,7 +161,8 @@ class RayWorkers:
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
         """Stop the workers given; kill those that cannot answer at once.
 
-        A worker waiting for room on a node never answers.
+        A worker waiting for room on a node never answers, and a worker's engine
+        stops when its actor dies.
         """
         actors = list(resolve_actor_handles(workers, self._config.cluster_id).values())
         if not actors:
