@@ -160,9 +160,10 @@ warning; `start()` fails right away instead.
 To run several workers on one machine, raise `workers_per_node`. Each worker picks
 free ports unless `task_port` and `shuffle_port` are fixed.
 
-The actors are running in `detached` mode and survive past the script: one can
-reconnect with the same `ray.init()` and `cluster` gymnastics from another
-process.
+The scheduler and scaler actors are running in `detached` mode and survive past the
+script: one can reconnect with the same `ray.init()` and `cluster` gymnastics from
+another process. The workers belong to the scheduler actor: they stop when it does, and
+a restarted scheduler starts new ones.
 To clean all actors and underlying processes, Ray itself needs to be shutdown
 using the following command:
 

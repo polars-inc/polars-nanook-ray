@@ -22,6 +22,8 @@ from polars_nanook_ray.subprocess_runner import SubprocessRunner
 if typing.TYPE_CHECKING:
     import pathlib
 
+    from ray.actor import ActorHandle
+
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +125,8 @@ class RayWorkers:
     ) -> None:
         self._config = config
         self._scheduler_host = scheduler_host
+        # Ray destroys an owned actor once its owner holds no handle to it
+        self._started: dict[WorkerId, ActorHandle] = {}
 
     def nodes(self) -> list[Node]:
         return [
@@ -144,11 +148,12 @@ class RayWorkers:
             msg = "Cannot start workers without the scheduler's host"
             raise RuntimeError(msg)
 
-        PolarsWorkerActor.options(  # type: ignore[attr-defined]
+        self._started[slot.worker_id] = PolarsWorkerActor.options(  # type: ignore[attr-defined]
             name=slot.worker_id.actor_name,
             namespace=self._config.cluster_id,
             get_if_exists=True,
-            lifetime="detached",
+            # owned by the scheduler actor: Ray stops the workers when it dies, and its
+            # restart starts new ones that register at its current address
             max_restarts=self._config.worker_max_restarts,
             num_cpus=self._config.worker.cpus_hint,
             memory=self._config.worker.memory_hint,
@@ -162,3 +167,5 @@ class RayWorkers:
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
         actors = resolve_actor_handles(workers, self._config.cluster_id)
         terminate_actors(list(actors.values()), self._config.actor_response_timeout)
+        for worker in workers:
+            self._started.pop(worker, None)
