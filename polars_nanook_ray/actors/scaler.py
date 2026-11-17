@@ -7,7 +7,7 @@ import ray
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 from ray.actor import ActorHandle
 
-from polars_nanook_ray.actors.utils import _handle_sigterm
+from polars_nanook_ray.actors.utils import _handle_sigterm, _log_to_stderr
 from polars_nanook_ray.config import SCALER_HOST, PolarsRayClusterConfig
 from polars_nanook_ray.identity import SCHEDULER
 
@@ -150,6 +150,7 @@ class PolarsScalerActor:
     """Bridge service relaying scaling requests to the scheduler actor."""
 
     def __init__(self, config: PolarsRayClusterConfig) -> None:
+        _log_to_stderr()
         self.config: PolarsRayClusterConfig = config
 
         self._http_server: _ScalingHTTPServer | None = None
