@@ -35,9 +35,13 @@ ray start \
   --disable-usage-stats \
   --head \
   --port="6379" \
-  --ray-client-server-port="10001" \
-  --resources='{"head":1}' # pinning
+  --ray-client-server-port="10001"
 ```
+
+The scheduler, the scaler and the license server always run on the Ray head node,
+pinned with Ray's built-in `node:__internal_head__` resource; no custom resource is
+needed. They request no CPUs by default, so a head node started with `--num-cpus=0`
+works too.
 
 If you do not already have one, create a Polars Nanook service account through the
 [Polars Nanook portal](https://nanook.pola.rs/api/redirects/register).

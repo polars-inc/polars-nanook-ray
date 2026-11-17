@@ -106,7 +106,6 @@ def ray_head() -> typing.Iterator[None]:
             "--disable-usage-stats",
             f"--port={RAY_GCS_PORT}",
             f"--ray-client-server-port={RAY_CLIENT_PORT}",
-            '--resources={"head":1}',
         ],
         check=True,
     )

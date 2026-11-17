@@ -17,6 +17,7 @@ from polars_nanook_ray.actors import (
     resolve_worker_name,
     terminate_actors,
 )
+from polars_nanook_ray.actors.head_node import head_node_options
 from polars_nanook_ray.config import PolarsRayClusterConfig
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ class PolarsRayCluster:
             return False
         return True
 
-    def _start_scheduler(self) -> None:
+    def _start_scheduler(self, options: dict[str, typing.Any]) -> None:
         actor_name = resolve_scheduler_name()
 
         try:
@@ -103,9 +104,7 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
-            resources={"head": 0.001},  # pinning
-            num_cpus=self.config.scheduler.cpus_hint,
-            memory=self.config.scheduler.memory_hint,
+            **options,
         ).remote(self.config)
 
     def _start_workers(self) -> None:
@@ -159,8 +158,7 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
-            resources={"head": 0.001},  # pinning, same node as the scheduler
-            num_cpus=0,
+            **head_node_options("scaler", num_cpus=0),  # same node as the scheduler
         ).remote(self.config)
 
     def _wait_for_scheduler(self) -> None:
@@ -259,6 +257,12 @@ class PolarsRayCluster:
 
     def start(self) -> None:
         """Start (or reconnect to) our various actors; block until ready."""
+        scheduler_options = head_node_options(
+            "scheduler",
+            num_cpus=self.config.scheduler.cpus_hint,
+            memory=self.config.scheduler.memory_hint,
+        )
+
         self.config._port_availability(
             check_scheduler=not self._actor_exists(resolve_scheduler_name()),
             check_workers=[
@@ -273,7 +277,7 @@ class PolarsRayCluster:
             self._start_scaler()
             self._wait_for_scaler()
 
-        self._start_scheduler()
+        self._start_scheduler(scheduler_options)
         self._start_workers()
 
         self._wait_for_scheduler()
