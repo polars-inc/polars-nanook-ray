@@ -111,6 +111,7 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
+            max_restarts=self.config.scheduler_max_restarts,
             **self._scheduler_options(),
         ).remote(self.config)
 
@@ -164,6 +165,7 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
+            max_restarts=self.config.scheduler_max_restarts,
             **placement_options(  # same node as the scheduler
                 "scaler",
                 resource=self.config.scheduler.placement_resource,

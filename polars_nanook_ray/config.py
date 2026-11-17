@@ -762,6 +762,14 @@ class PolarsRayClusterConfig(BaseModel):
         default=3,
         description="Ray actor restart limit for workers (-1 = unlimited).",
     )
+    scheduler_max_restarts: int = Field(
+        default=3,
+        description=(
+            "Ray actor restart limit for the scheduler and the scaler (-1 = "
+            "unlimited). Workers register again with a restarted scheduler, but "
+            "queries running when it stopped are lost."
+        ),
+    )
     worker_reconcile_interval: float = Field(
         default=10.0,
         ge=0,
