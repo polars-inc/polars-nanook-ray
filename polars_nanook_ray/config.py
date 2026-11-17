@@ -499,8 +499,11 @@ class PolarsSchedulerConfig(BaseModel):
 
     # ray configuration
     cpus_hint: int = Field(
-        default=1,
-        description="Number of CPU cores requested for the scheduler actor.",
+        default=0,
+        description=(
+            "Number of CPU cores requested for the scheduler actor. It runs on the "
+            "Ray head node, which often has no CPUs to give."
+        ),
     )
     memory_hint: int = Field(
         default=1 * 1024**3,
@@ -1144,8 +1147,11 @@ class PolarsRayLicenseServerConfig(BaseModel):
 
     # ray configuration
     cpus_hint: int = Field(
-        default=1,
-        description="Number of CPU cores requested for the license server actor.",
+        default=0,
+        description=(
+            "Number of CPU cores requested for the license server actor. It runs on "
+            "the Ray head node, which often has no CPUs to give."
+        ),
     )
     memory_hint: int = Field(
         default=50 * 1024**2,

@@ -17,6 +17,7 @@ from polars_nanook_ray.actors import (
     resolve_worker_name,
     terminate_actors,
 )
+from polars_nanook_ray.actors.head_node import head_node_options
 from polars_nanook_ray.config import PolarsRayClusterConfig
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,13 @@ class PolarsRayCluster:
             return False
         return True
 
+    def _scheduler_options(self) -> dict[str, typing.Any]:
+        return head_node_options(
+            "scheduler",
+            num_cpus=self.config.scheduler.cpus_hint,
+            memory=self.config.scheduler.memory_hint,
+        )
+
     def _start_scheduler(self) -> None:
         actor_name = resolve_scheduler_name()
 
@@ -103,9 +111,7 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
-            resources={"head": 0.001},  # pinning
-            num_cpus=self.config.scheduler.cpus_hint,
-            memory=self.config.scheduler.memory_hint,
+            **self._scheduler_options(),
         ).remote(self.config)
 
     def _start_workers(self) -> None:
@@ -159,8 +165,7 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
-            resources={"head": 0.001},  # pinning, same node as the scheduler
-            num_cpus=0,
+            **head_node_options("scaler", num_cpus=0),  # same node as the scheduler
         ).remote(self.config)
 
     def _wait_for_scheduler(self) -> None:
@@ -259,8 +264,12 @@ class PolarsRayCluster:
 
     def start(self) -> None:
         """Start (or reconnect to) our various actors; block until ready."""
+        scheduler_exists = self._actor_exists(resolve_scheduler_name())
+        if not scheduler_exists:
+            self._scheduler_options()  # fail before the scaler is created
+
         self.config._port_availability(
-            check_scheduler=not self._actor_exists(resolve_scheduler_name()),
+            check_scheduler=not scheduler_exists,
             check_workers=[
                 worker_id
                 for worker_id in range(self.config.num_workers)

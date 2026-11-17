@@ -10,6 +10,7 @@ from polars_nanook_ray.actors import (
     resolve_license_server_name,
     terminate_actors,
 )
+from polars_nanook_ray.actors.head_node import head_node_options
 from polars_nanook_ray.config import PolarsRayLicenseServerConfig
 
 logger = logging.getLogger(__name__)
@@ -60,9 +61,11 @@ class PolarsRayLicenseServer:
         self._actor = PolarsLicenseServerActor.options(  # type: ignore[attr-defined]
             name=actor_name,
             lifetime="detached",
-            resources={"head": 0.001},  # pinning
-            num_cpus=self.config.cpus_hint,
-            memory=self.config.memory_hint,
+            **head_node_options(
+                "license server",
+                num_cpus=self.config.cpus_hint,
+                memory=self.config.memory_hint,
+            ),
         ).remote(self.config)
 
     def _wait_for_actor(self) -> None:
