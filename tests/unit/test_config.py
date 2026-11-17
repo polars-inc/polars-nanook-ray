@@ -8,6 +8,7 @@ from polars_nanook_ray.config import (
     PolarsEnterpriseLicenseConfig,
     PolarsLicenseServerConfig,
     PolarsRayClusterConfig,
+    PolarsScalingConfig,
     PolarsSchedulerConfig,
     PolarsWorkerConfig,
 )
@@ -55,3 +56,11 @@ def test_license_server_uri_reaches_scheduler_and_workers(license_) -> None:
     expected = {"license_server": {"uri": "https://license.example:50051"}}
     assert scheduler["license"] == expected
     assert worker["license"] == expected
+
+
+def test_unpinned_scheduler_rejects_scaling() -> None:
+    with pytest.raises(pydantic.ValidationError, match="placement_resource"):
+        PolarsSchedulerConfig(
+            placement_resource=None,
+            scaling=PolarsScalingConfig(enabled=True),
+        )

@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # the scaler HTTP server binds here, on the scheduler node, and the scheduler calls it
 SCALER_HOST = "127.0.0.1"
 
+# advertised by every Ray head node, see `ray._private.ray_constants`
+HEAD_NODE_RESOURCE = "node:__internal_head__"
+
 
 def _resolve_absolute_path(path: str) -> pathlib.Path:
     return pathlib.Path(os.path.normpath(pathlib.Path(path).expanduser().absolute()))
@@ -437,13 +440,24 @@ class PolarsSchedulerConfig(BaseModel):
     cpus_hint: int = Field(
         default=0,
         description=(
-            "Number of CPU cores requested for the scheduler actor. It runs on the "
-            "Ray head node, which often has no CPUs to give."
+            "Number of CPU cores requested for the scheduler actor. By default it "
+            "runs on the Ray head node, which often has no CPUs to give."
         ),
     )
     memory_hint: int = Field(
         default=1 * 1024**3,
         description="Max memory, in bytes, requested for the scheduler actor.",
+    )
+    placement_resource: str | None = Field(
+        default=HEAD_NODE_RESOURCE,
+        description=(
+            "Ray resource pinning the scheduler and the scaler to the node that "
+            "advertises it; each requests a fraction of it. Defaults to the head "
+            "node. Set a custom resource, such as `scheduler_node` given to a node "
+            "with `ray start --resources`, to pin them elsewhere. Set `None` to let "
+            "Ray place the scheduler anywhere; this rules out scaling, as the scaler "
+            "listens on 127.0.0.1 and must share the scheduler's node."
+        ),
     )
 
     # native binary configuration
@@ -554,6 +568,16 @@ class PolarsSchedulerConfig(BaseModel):
         default_factory=PolarsScalingConfig,
         description="Autoscaling (ScalingService REST callback) configuration.",
     )
+
+    @model_validator(mode="after")
+    def _scaling_needs_placement(self) -> "PolarsSchedulerConfig":
+        if self.placement_resource is None and self.scaling.enabled:
+            msg = (
+                "Scaling requires a `placement_resource`: the scaler must run on the "
+                "scheduler's node."
+            )
+            raise ValueError(msg)
+        return self
 
     def config_static_leader(self, scheduler_host: str) -> dict:
         return {

@@ -17,7 +17,7 @@ from polars_nanook_ray.actors import (
     resolve_worker_name,
     terminate_actors,
 )
-from polars_nanook_ray.actors.head_node import head_node_options
+from polars_nanook_ray.actors.head_node import placement_options
 from polars_nanook_ray.config import PolarsRayClusterConfig
 
 logger = logging.getLogger(__name__)
@@ -83,10 +83,12 @@ class PolarsRayCluster:
         return True
 
     def _scheduler_options(self) -> dict[str, typing.Any]:
-        return head_node_options(
+        return placement_options(
             "scheduler",
+            resource=self.config.scheduler.placement_resource,
             num_cpus=self.config.scheduler.cpus_hint,
             memory=self.config.scheduler.memory_hint,
+            single_node=self.config.scheduler.scaling.enabled,
         )
 
     def _start_scheduler(self) -> None:
@@ -161,7 +163,12 @@ class PolarsRayCluster:
             name=actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
-            **head_node_options("scaler", num_cpus=0),  # same node as the scheduler
+            **placement_options(  # same node as the scheduler
+                "scaler",
+                resource=self.config.scheduler.placement_resource,
+                num_cpus=0,
+                single_node=True,
+            ),
         ).remote(self.config)
 
     def _wait_for_scheduler(self) -> None:
