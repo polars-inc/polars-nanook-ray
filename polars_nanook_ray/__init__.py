@@ -21,7 +21,6 @@ from polars_nanook_ray.config import (
     PolarsScalingConfig,
     PolarsSchedulerConfig,
     PolarsServiceAccountLicenseConfig,
-    PolarsSubprocessConfig,
     PolarsWorkerConfig,
 )
 from polars_nanook_ray.context import RayClusterContext
@@ -45,7 +44,6 @@ __all__ = [
     "PolarsSchedulerActor",
     "PolarsSchedulerConfig",
     "PolarsServiceAccountLicenseConfig",
-    "PolarsSubprocessConfig",
     "PolarsWorkerActor",
     "PolarsWorkerConfig",
     "RayClusterContext",

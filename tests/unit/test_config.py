@@ -1,3 +1,5 @@
+import pathlib
+
 import pydantic
 import pytest
 import toml
@@ -6,7 +8,6 @@ from polars_nanook_ray.config import (
     PolarsEnterpriseLicenseConfig,
     PolarsRayClusterConfig,
     PolarsSchedulerConfig,
-    PolarsSubprocessConfig,
     PolarsWorkerConfig,
 )
 
@@ -22,18 +23,15 @@ def _cluster_config(**kwargs) -> PolarsRayClusterConfig:
     )
 
 
-def test_subprocess_runtime_is_the_default() -> None:
-    assert _cluster_config().runtime == PolarsSubprocessConfig()
+def test_removed_runtime_rejected() -> None:
+    with pytest.raises(pydantic.ValidationError, match="`runtime` was removed"):
+        _cluster_config(runtime={"binary_path": "/path/to/binary"})
 
 
-def test_subprocess_runtime_from_dict() -> None:
-    config = _cluster_config(runtime={"runtime_type": "subprocess"})
-    assert config.runtime == PolarsSubprocessConfig()
-
-
-def test_docker_runtime_rejected() -> None:
-    with pytest.raises(pydantic.ValidationError, match="subprocess"):
-        _cluster_config(runtime={"runtime_type": "docker", "image": "polars:latest"})
+def test_relative_binary_path_made_absolute() -> None:
+    assert _cluster_config(binary_path="bin/polars").binary_path == str(
+        pathlib.Path("bin/polars").absolute()
+    )
 
 
 @pytest.mark.parametrize(
@@ -46,7 +44,7 @@ def test_worker_ports_offset_on_single_host(
     expected_shuffle_port: int,
 ) -> None:
     config = _cluster_config(
-        runtime=PolarsSubprocessConfig(single_host_cluster=single_host_cluster),
+        single_host_cluster=single_host_cluster,
     )
 
     worker = toml.loads(config.config_worker(2, "10.0.0.2", "10.0.0.1"))["worker"]

@@ -10,8 +10,6 @@ import sysconfig
 import psutil
 import toml
 
-from polars_nanook_ray.config import PolarsSubprocessConfig
-
 logger = logging.getLogger(__name__)
 
 COMPUTE_SCRIPT = "polars-nanook-compute"
@@ -36,11 +34,11 @@ class SubprocessRunner:
 
     def __init__(
         self,
-        runtime: PolarsSubprocessConfig,
+        binary_path: str | None,
         instance_id: str,
         name: str,
     ) -> None:
-        self.runtime = runtime
+        self.binary_path = binary_path
         self.instance_id = instance_id
         self.name = name
 
@@ -68,8 +66,8 @@ class SubprocessRunner:
         # sys.executable, for stop_orphans to match the command line it launched
         return (
             [sys.executable, _resolve_compute_script()]
-            if self.runtime.binary_path is None
-            else [self.runtime.binary_path]
+            if self.binary_path is None
+            else [self.binary_path]
         )
 
     @functools.cached_property

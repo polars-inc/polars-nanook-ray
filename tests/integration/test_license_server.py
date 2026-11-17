@@ -10,7 +10,6 @@ from polars_nanook_ray.actors import PolarsLicenseServerActor
 from polars_nanook_ray.config import (
     PolarsLicenseServerConfig,
     PolarsRayLicenseServerConfig,
-    PolarsSubprocessConfig,
 )
 
 from .conftest import RayClusterFactory, _free_port
@@ -63,9 +62,7 @@ def test_license_server_reporting(
     ray_cluster: RayClusterFactory,
 ) -> None:
     config = PolarsRayLicenseServerConfig(
-        runtime=PolarsSubprocessConfig(
-            binary_path=os.environ["BINARY_PATH_LICENSE_SERVER"],
-        ),
+        binary_path=os.environ["BINARY_PATH_LICENSE_SERVER"],
         grpc_port=_free_port(),
         http_port=_free_port(),
         report_dir=str(tmp_path),

@@ -21,7 +21,6 @@ from polars_nanook_ray.config import (
     PolarsRayClusterConfig,
     PolarsScalingConfig,
     PolarsSchedulerConfig,
-    PolarsSubprocessConfig,
     PolarsWorkerConfig,
 )
 from polars_nanook_ray.context import RayClusterContext
@@ -156,10 +155,8 @@ def ray_cluster_config() -> RayClusterConfigFactory:
 
         return PolarsRayClusterConfig(
             # cluster configuration
-            runtime=PolarsSubprocessConfig(
-                binary_path=os.environ.get("BINARY_PATH"),
-                single_host_cluster=True,
-            ),
+            binary_path=os.environ.get("BINARY_PATH"),
+            single_host_cluster=True,
             worker_max_restarts=worker_max_restarts,
             # native binary configuration
             cluster_id=cluster_id,

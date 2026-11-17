@@ -5,7 +5,7 @@ import urllib.request
 
 import ray
 
-from polars_nanook_ray.actors.runtimes import SubprocessRunner
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import _handle_sigterm
 from polars_nanook_ray.config import PolarsRayLicenseServerConfig
 
@@ -27,7 +27,7 @@ class PolarsLicenseServerActor:
 
         name = resolve_license_server_name()
         self._runner = SubprocessRunner(
-            config.runtime,
+            config.binary_path,
             name,
             config.instance_name(name),
         )

@@ -5,7 +5,7 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.runtimes import SubprocessRunner
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -49,7 +49,7 @@ class PolarsWorkerActor:
 
         self._config_path: pathlib.Path = _resolve_config_path(self.worker_name)
         self._runner = SubprocessRunner(
-            config.runtime,
+            config.binary_path,
             self.worker_name,
             config.instance_name(self.worker_name),
         )

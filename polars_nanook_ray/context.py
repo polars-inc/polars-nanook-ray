@@ -15,15 +15,12 @@ class RayClusterContext(PolarsRayCluster, ClusterContext):
         PolarsRayClusterConfig,
         PolarsSchedulerConfig,
         PolarsServiceAccountLicenseConfig,
-        PolarsSubprocessConfig,
         PolarsWorkerConfig,
     )
     from polars_nanook_ray.context import RayClusterContext
 
     config = PolarsRayClusterConfig(
-        runtime=PolarsSubprocessConfig(
-            # single_host_cluster=True,
-        ),
+        # single_host_cluster=True,
         num_workers=4,
         license=PolarsServiceAccountLicenseConfig(
             workspace_id="<WORKSPACE_ID>",

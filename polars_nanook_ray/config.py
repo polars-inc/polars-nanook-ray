@@ -725,46 +725,23 @@ class PolarsWorkerConfig(BaseModel):
         return d
 
 
-class PolarsSubprocessConfig(BaseModel):
-    """Run the binary as a subprocess of the actor, as a system process on the host."""
-
+class PolarsRayClusterConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    runtime_type: typing.Literal["subprocess"] = "subprocess"
-
+    # process configuration
     binary_path: str | None = Field(
         default=None,
         description=(
             "Path to the binary, on the host. If unset, runs the "
-            "`polars-nanook-compute` package installed alongside this one; the "
-            "license server requires it."
+            "`polars-nanook-compute` package installed alongside this one."
         ),
     )
     single_host_cluster: bool = Field(
         default=False,
         description=(
             "Offset each worker's ports by worker_id so multiple workers can run on "
-            "the same host without port collisions. Ignored by the license server."
+            "the same host without port collisions."
         ),
-    )
-
-    @model_validator(mode="after")
-    def _absolute_binary_path(self) -> "PolarsSubprocessConfig":
-        """Convert a relative into an absolute path."""
-        if self.binary_path is not None:
-            object.__setattr__(
-                self, "binary_path", str(_resolve_absolute_path(self.binary_path))
-            )
-        return self
-
-
-class PolarsRayClusterConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    # runtime configuration
-    runtime: PolarsSubprocessConfig = Field(
-        default_factory=PolarsSubprocessConfig,
-        description="How and where the scheduler and worker binaries run.",
     )
 
     # ray configuration
@@ -849,9 +826,30 @@ class PolarsRayClusterConfig(BaseModel):
         ),
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _no_runtime(cls, data: typing.Any) -> typing.Any:
+        """Raise on the removed `runtime`, rather than ignore its binary path."""
+        if isinstance(data, dict) and "runtime" in data:
+            msg = (
+                "`runtime` was removed; set `binary_path` and `single_host_cluster` "
+                "on the cluster config instead."
+            )
+            raise ValueError(msg)
+        return data
+
+    @model_validator(mode="after")
+    def _absolute_binary_path(self) -> "PolarsRayClusterConfig":
+        """Convert a relative into an absolute path."""
+        if self.binary_path is not None:
+            object.__setattr__(
+                self, "binary_path", str(_resolve_absolute_path(self.binary_path))
+            )
+        return self
+
     def _worker_port_offset(self, worker_id: int) -> int:
         """Per-worker port offset to avoid collisions when co-located on one host."""
-        return worker_id * 2 if self.runtime.single_host_cluster else 0
+        return worker_id * 2 if self.single_host_cluster else 0
 
     def _port_availability(
         self,
@@ -861,7 +859,7 @@ class PolarsRayClusterConfig(BaseModel):
         check_scaler: bool,
     ) -> None:
         """Raise if needed ports are already taken (only meaningful on single-host)."""
-        if not self.runtime.single_host_cluster:
+        if not self.single_host_cluster:
             return
 
         ports: dict[str, int] = {}
@@ -975,12 +973,10 @@ class PolarsRayLicenseServerConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # runtime configuration
-    runtime: PolarsSubprocessConfig = Field(
-        default_factory=lambda: PolarsSubprocessConfig(
-            binary_path="polars-nanook-license-server"
-        ),
-        description="How and where the license server binary runs.",
+    # process configuration
+    binary_path: str = Field(
+        default="polars-nanook-license-server",
+        description="Path to the license server binary, on the host.",
     )
 
     # ray configuration
@@ -1037,11 +1033,11 @@ class PolarsRayLicenseServerConfig(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _binary_path_required(self) -> "PolarsRayLicenseServerConfig":
-        """Raise if the binary is missing, as no package provides it."""
-        if self.runtime.binary_path is None:
-            msg = "The license server subprocess runtime requires a binary."
-            raise ValueError(msg)
+    def _absolute_binary_path(self) -> "PolarsRayLicenseServerConfig":
+        """Convert a relative into an absolute path."""
+        object.__setattr__(
+            self, "binary_path", str(_resolve_absolute_path(self.binary_path))
+        )
         return self
 
     def config(self) -> dict[str, str]:
