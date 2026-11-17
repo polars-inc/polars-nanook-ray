@@ -5,23 +5,22 @@ import typing
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from polars_nanook_ray.actors.placement import WorkerSlot
+from polars_nanook_ray.actors.pool import Node, WorkerSlot
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
     _resolve_config_path,
     _write_config,
+    resolve_actor_handles,
+    terminate_actors,
 )
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.identity import WorkerId, list_workers
 from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 if typing.TYPE_CHECKING:
     import pathlib
-
-    from ray.actor import ActorHandle
-
-    from polars_nanook_ray.identity import WorkerId
 
 
 logger = logging.getLogger(__name__)
@@ -116,23 +115,50 @@ class PolarsWorkerActor:
         return self._runner.pid()
 
 
-def start_worker(
-    config: PolarsRayClusterConfig,
-    slot: WorkerSlot,
-    scheduler_host: str,
-) -> "ActorHandle":
-    """Start the worker of `slot` on its node, or return it if it already runs."""
-    actor = PolarsWorkerActor.options(  # type: ignore[attr-defined]
-        name=slot.worker_id.actor_name,
-        namespace=config.cluster_id,
-        get_if_exists=True,
-        lifetime="detached",
-        max_restarts=config.worker_max_restarts,
-        num_cpus=config.worker.cpus_hint,
-        memory=config.worker.memory_hint,
-        scheduling_strategy=NodeAffinitySchedulingStrategy(slot.node_id, soft=False),
-    ).remote(config, slot, scheduler_host)
+class RayWorkers:
+    """The worker actors of one cluster, on the nodes of the Ray cluster."""
 
-    logger.info("Requested worker %s", slot.worker_id)
+    def __init__(
+        self, config: PolarsRayClusterConfig, scheduler_host: str | None = None
+    ) -> None:
+        self._config = config
+        self._scheduler_host = scheduler_host
 
-    return actor
+    def nodes(self) -> list[Node]:
+        return [
+            Node(
+                node["NodeID"],
+                alive=node["Alive"],
+                cpus=node["Resources"].get("CPU", 0),
+                memory=node["Resources"].get("memory", 0),
+            )
+            for node in ray.nodes()
+        ]
+
+    def running(self) -> set[WorkerId]:
+        return list_workers(self._config.cluster_id)
+
+    def start(self, slot: WorkerSlot) -> None:
+        """Start the worker of `slot` pinned to its node, unless it already runs."""
+        if self._scheduler_host is None:
+            msg = "Cannot start workers without the scheduler's host"
+            raise RuntimeError(msg)
+
+        PolarsWorkerActor.options(  # type: ignore[attr-defined]
+            name=slot.worker_id.actor_name,
+            namespace=self._config.cluster_id,
+            get_if_exists=True,
+            lifetime="detached",
+            max_restarts=self._config.worker_max_restarts,
+            num_cpus=self._config.worker.cpus_hint,
+            memory=self._config.worker.memory_hint,
+            scheduling_strategy=NodeAffinitySchedulingStrategy(
+                slot.node_id, soft=False
+            ),
+        ).remote(self._config, slot, self._scheduler_host)
+
+        logger.info("Requested worker %s", slot.worker_id)
+
+    def terminate(self, workers: typing.Collection[WorkerId]) -> None:
+        actors = resolve_actor_handles(workers, self._config.cluster_id)
+        terminate_actors(list(actors.values()), self._config.actor_response_timeout)

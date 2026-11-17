@@ -1,28 +1,19 @@
 import logging
 import os
-import threading
-import time
 import typing
 
 import ray
 
-from polars_nanook_ray.actors.placement import (
-    WorkerPoolReconciler,
-    WorkerSlot,
-    plan_workers,
-    warn_no_room,
-)
+from polars_nanook_ray.actors.pool import WorkerPool
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
     _resolve_config_path,
     _write_config,
-    resolve_actor_handles,
-    terminate_actors,
 )
-from polars_nanook_ray.actors.worker import start_worker
+from polars_nanook_ray.actors.worker import RayWorkers
 from polars_nanook_ray.config import PolarsRayClusterConfig
-from polars_nanook_ray.identity import SCHEDULER, WorkerId, identify, list_workers
+from polars_nanook_ray.identity import SCHEDULER, WorkerId
 from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
@@ -33,13 +24,6 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _live_workers_of(
-    requested: set[str] | None, live: set[WorkerId]
-) -> set[WorkerId] | None:
-    """Return the live workers the engine instance IDs or actor names given are."""
-    return live & {identify(value) for value in requested or ()} or None
-
-
 @ray.remote
 class PolarsSchedulerActor:
     """The central service, distributing tasks and piloting autoscaling."""
@@ -47,55 +31,20 @@ class PolarsSchedulerActor:
     def __init__(self, config: PolarsRayClusterConfig) -> None:
         self.config_cluster: PolarsRayClusterConfig = config
 
-        self.num_workers: int = config.num_workers  # initial value
-
         self._config_path: pathlib.Path = _resolve_config_path(SCHEDULER)
         self._runner = SubprocessRunner(config.binary_path, SCHEDULER)
 
         self.scheduler_host: str = self._runner.host
+        self._pool = WorkerPool(
+            RayWorkers(config, self.scheduler_host), config, config.num_workers
+        )
 
-        self._reconciling = threading.Event()
         self.start()
         _handle_sigterm(self.stop)
-
-        if config.worker_reconcile_interval > 0:
-            self._reconciler = WorkerPoolReconciler(
-                config.worker_reconcile_interval,
-                plan=self._plan_workers,
-                start=self._start_worker,
-                running=self._list_workers,
-            )
-            threading.Thread(
-                target=self._reconcile_workers, name="reconcile-workers", daemon=True
-            ).start()
-
-    def _plan_workers(self, target: int, running: set[WorkerId]) -> list[WorkerSlot]:
-        return plan_workers(self.config_cluster, target, running)
-
-    def _start_worker(self, slot: WorkerSlot) -> None:
-        start_worker(self.config_cluster, slot, self.scheduler_host)
-
-    def _list_workers(self) -> set[WorkerId]:
-        return list_workers(self.config_cluster.cluster_id)
-
-    def _reconcile_workers(self) -> None:
-        while not self._reconciling.wait(self._reconciler.interval):
-            try:
-                self._reconciler.reconcile(self.num_workers, time.monotonic())
-            except Exception:
-                logger.exception("Could not reconcile the worker pool")
+        self._pool.start_refilling()
 
     def __ray_shutdown__(self) -> None:
         self.stop()
-
-    def _remove_workers(self, workers: set[WorkerId]) -> None:
-        actors = resolve_actor_handles(workers, self.config_cluster.cluster_id)
-        terminate_actors(
-            list(actors.values()), self.config_cluster.actor_response_timeout
-        )
-
-        for worker in workers:
-            logger.info("Removed worker %s", worker)
 
     def start(self) -> None:
         """Spawn the scheduler process, if not already running."""
@@ -124,13 +73,9 @@ class PolarsSchedulerActor:
 
         self._runner.start(self._config_path, env)
 
-    def stop_reconciling(self) -> None:
-        """Stop refilling the worker pool, before the workers are stopped."""
-        self._reconciling.set()
-
     def stop(self) -> None:
-        """Terminate the scheduler process and clean up."""
-        self.stop_reconciling()
+        """Terminate the scheduler process and clean up, leaving the workers."""
+        self._pool.halt()
         self._runner.stop()
 
         _remove_config(self._config_path)
@@ -169,12 +114,20 @@ class PolarsSchedulerActor:
 
     def get_scaling_status(self) -> dict[str, int | set[WorkerId] | None]:
         """Return the current/desired worker counts and configured bounds."""
+        status = self._pool.status()
         return {
-            "available": self._list_workers(),
-            "desired": self.num_workers,
+            "available": status.running,
+            "desired": status.target,
             "min": self.config_cluster.min_workers,
             "max": self.config_cluster.max_workers,
         }
+
+    def ensure_workers(self, num_workers: int) -> set[WorkerId]:
+        """Start workers until there are at least `num_workers`; return them all.
+
+        Raises `NoRoomForWorkers`, starting none, if the nodes cannot fit them all.
+        """
+        return self._pool.ensure(num_workers)
 
     def rescale_worker_pool_to(
         self,
@@ -188,8 +141,8 @@ class PolarsSchedulerActor:
         ----------
         num_workers
             The number of worker to upscale or downscale to, clamped to `min_workers`
-            and `max_workers`. If neither `delete` nor `keep` is given, random workers
-            are removed.
+            and `max_workers`. If neither `delete` nor `keep` is given, workers on
+            lost nodes, then the last ones placed, are removed.
         delete
             Set of workers to terminate, as engine instance IDs or actor names.
             Applied before `keep`. Values that are not live workers are ignored.
@@ -199,50 +152,8 @@ class PolarsSchedulerActor:
             Values that are not live workers are ignored.
 
         """
-        min_workers = self.config_cluster.min_workers
-        max_workers = self.config_cluster.max_workers
-        clamped = max(min_workers, num_workers)
+        self._pool.rescale(num_workers, delete=delete, keep=keep)
 
-        if max_workers is not None:
-            clamped = min(max_workers, clamped)
-
-        if clamped != num_workers:
-            logger.warning(
-                "Clamped requested %d workers to %d, within [%d, %s]",
-                num_workers,
-                clamped,
-                min_workers,
-                max_workers,
-            )
-            num_workers = clamped
-
-        # set first, for the reconciler not to refill the workers removed below
-        self.num_workers = num_workers
-
-        workers = self._list_workers()
-
-        _delete = _live_workers_of(delete, workers)
-        _keep = _live_workers_of(keep, workers)
-
-        if len(workers) < num_workers:
-            slots = self._plan_workers(num_workers, workers)
-            if len(workers) + len(slots) < num_workers:
-                warn_no_room(len(slots), num_workers - len(workers))
-            for slot in slots:
-                self._start_worker(slot)
-
-        elif len(workers) > num_workers:
-            if num_workers == 0:
-                to_remove = set(workers)
-            elif _delete is None and _keep is None:
-                to_remove = set(list(workers)[: len(workers) - num_workers])
-            else:
-                to_remove = set()
-                remaining = workers
-                if _delete is not None:
-                    to_remove |= _delete
-                    remaining = remaining - _delete
-                if _keep is not None:
-                    to_remove |= remaining - _keep
-
-            self._remove_workers(to_remove)
+    def stop_workers(self) -> None:
+        """Stop refilling the worker pool, then terminate every worker."""
+        self._pool.stop()

@@ -1,4 +1,3 @@
-import contextlib
 import logging
 import time
 import typing
@@ -12,18 +11,21 @@ from ray.exceptions import (
 )
 
 from polars_nanook_ray.actors import (
+    NoRoomForWorkers,
     PolarsScalerActor,
     PolarsSchedulerActor,
-    WorkerSlot,
-    plan_workers,
+    RayWorkers,
     resolve_actor_handles,
     resolve_scaler_name,
-    start_worker,
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import placement_options
+from polars_nanook_ray.actors.pool import WorkerPool
 from polars_nanook_ray.config import PolarsRayClusterConfig
-from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
+from polars_nanook_ray.identity import SCHEDULER
+
+if typing.TYPE_CHECKING:
+    from polars_nanook_ray.identity import WorkerId
 
 logger = logging.getLogger(__name__)
 
@@ -117,39 +119,12 @@ class PolarsRayCluster:
             **self._scheduler_options(),
         ).remote(self.config)
 
-    def _plan_workers(self, running: set[WorkerId]) -> list[WorkerSlot]:
-        slots = plan_workers(self.config, self.config.num_workers, running)
-
-        if len(running) + len(slots) < self.config.num_workers:
-            msg = (
-                f"Cannot start {self.config.num_workers} workers: {len(running)} "
-                f"running, and room for {len(slots)} more; add nodes or raise "
-                "workers_per_node."
-            )
-            raise RuntimeError(msg)
-
-        return slots
-
-    def _start_workers(self, running: set[WorkerId], slots: list[WorkerSlot]) -> None:
-        if self._scheduler_actor is None:
-            msg = "Cannot start workers: scheduler actor is not available."
-            raise RuntimeError(msg)
-
-        scheduler_host = ray.get(
-            self._scheduler_actor.get_host.remote(),
+    def _ensure_workers(self) -> None:
+        names = ray.get(
+            self._scheduler_actor.ensure_workers.remote(self.config.num_workers),
             timeout=self.config.actor_response_timeout,
         )
-
-        worker_actors = resolve_actor_handles(running, self.config.cluster_id)
-        for worker in worker_actors:
-            logger.info("Reconnected to existing worker %s", worker)
-
-        for slot in slots:
-            worker_actors[slot.worker_id] = start_worker(
-                self.config, slot, scheduler_host
-            )
-
-        self._worker_actors = worker_actors
+        self._worker_actors = resolve_actor_handles(names, self.config.cluster_id)
 
     def _start_scaler(self) -> None:
         actor_name = resolve_scaler_name()
@@ -295,13 +270,12 @@ class PolarsRayCluster:
     def start(self) -> None:
         """Start (or reconnect to) our various actors; block until ready.
 
-        Tops the worker pool up to `num_workers`, one per free slot on the nodes, and
-        keeps any worker already running, so reconnecting never adds workers.
+        Has the scheduler top the worker pool up to `num_workers`, keeping any worker
+        already running, so reconnecting never adds workers. Fails right away if the
+        nodes have no room for `num_workers`, removing the actors it started.
         """
-        running = list_workers(self.config.cluster_id)
-        slots = self._plan_workers(running)
-
-        if not self._actor_exists(SCHEDULER.actor_name):
+        created = not self._actor_exists(SCHEDULER.actor_name)
+        if created:
             self._scheduler_options()  # fail before the scaler is created
 
         if self.config.scheduler.scaling.enabled:
@@ -309,7 +283,12 @@ class PolarsRayCluster:
             self._wait_for_scaler()
 
         self._start_scheduler()
-        self._start_workers(running, slots)
+        try:
+            self._ensure_workers()
+        except NoRoomForWorkers as exc:
+            if created:
+                self.stop()
+            raise RuntimeError(str(getattr(exc, "cause", exc))) from None
 
         self._wait_for_scheduler()
         self._wait_for_workers()
@@ -323,7 +302,7 @@ class PolarsRayCluster:
         logger.info(msg)
 
     def stop(self) -> None:
-        """Terminate all the actors (scaler, scheduler, workers)."""
+        """Terminate all the actors (scaler, workers, scheduler)."""
         try:
             self._scheduler_actor = ray.get_actor(
                 SCHEDULER.actor_name,
@@ -349,20 +328,7 @@ class PolarsRayCluster:
                 )
                 self._scaler_actor = None
 
-        if self._scheduler_actor is not None:
-            # or the scheduler refills the workers stopped below
-            with contextlib.suppress(RayError):
-                ray.get(
-                    self._scheduler_actor.stop_reconciling.remote(),
-                    timeout=self.config.actor_response_timeout,
-                )
-
-        workers = resolve_actor_handles(
-            list_workers(self.config.cluster_id), self.config.cluster_id
-        )
-        if workers:
-            logger.info("Stopping %d worker(s)...", len(workers))
-            terminate_actors(list(workers.values()), self.config.actor_response_timeout)
+        self._stop_workers()
         self._worker_actors = {}
 
         if self._scheduler_actor is not None:
@@ -374,6 +340,22 @@ class PolarsRayCluster:
             self._scheduler_actor = None
 
         logger.info("Cluster stopped")
+
+    def _stop_workers(self) -> None:
+        if self._scheduler_actor is not None:
+            try:
+                ray.get(
+                    self._scheduler_actor.stop_workers.remote(),
+                    # it stops the workers with the same timeout
+                    timeout=2 * self.config.actor_response_timeout,
+                )
+            except RayError:
+                logger.exception("The scheduler could not stop the workers")
+            else:
+                return
+
+        # no scheduler to stop them: stop any worker left behind from here
+        WorkerPool(RayWorkers(self.config), self.config, 0).stop()
 
     def get_client_addr(self) -> str:
         """Return the URI queries should be submitted to."""

@@ -1,0 +1,445 @@
+import itertools
+import threading
+import time
+import typing
+
+import pytest
+
+from polars_nanook_ray.actors.pool import (
+    MAX_REFILL_BACKOFF,
+    Node,
+    NoRoomForWorkers,
+    WorkerPool,
+    WorkerSlot,
+)
+from polars_nanook_ray.config import (
+    PolarsEnterpriseLicenseConfig,
+    PolarsRayClusterConfig,
+    PolarsSchedulerConfig,
+    PolarsWorkerConfig,
+)
+from polars_nanook_ray.identity import WorkerId
+
+NODE_A = "a" * 56
+NODE_B = "b" * 56
+NODE_C = "c" * 56
+
+
+def slot(node_id: str, index: int = 0) -> WorkerId:
+    return WorkerSlot(node_id, index).worker_id
+
+
+class InMemoryWorkers:
+    """Nodes and named worker actors, as Ray would hold them."""
+
+    def __init__(self, *nodes: Node) -> None:
+        self.nodes_by_id = {node.node_id: node for node in nodes}
+        self.workers: dict[WorkerId, str] = {}  # worker -> node ID
+
+    def nodes(self) -> list[Node]:
+        return list(self.nodes_by_id.values())
+
+    def running(self) -> set[WorkerId]:
+        return set(self.workers)
+
+    def start(self, slot: WorkerSlot) -> None:
+        assert self.nodes_by_id[slot.node_id].alive
+        self.workers.setdefault(slot.worker_id, slot.node_id)
+
+    def terminate(self, workers: typing.Collection[WorkerId]) -> None:
+        for worker in workers:
+            self.workers.pop(worker, None)
+
+    def kill(self, worker: WorkerId) -> None:
+        del self.workers[worker]
+
+    def remove_node(self, node_id: str) -> None:
+        del self.nodes_by_id[node_id]
+        self.workers = {n: i for n, i in self.workers.items() if i != node_id}
+
+
+def node(
+    node_id: str, *, alive: bool = True, cpus: float = 4, memory: float = 8e9
+) -> Node:
+    return Node(node_id, alive=alive, cpus=cpus, memory=memory)
+
+
+def config(**kwargs: typing.Any) -> PolarsRayClusterConfig:
+    kwargs.setdefault("worker", PolarsWorkerConfig(cpus_hint=1, memory_hint=1))
+    kwargs.setdefault("worker_reconcile_interval", 10)
+    return PolarsRayClusterConfig(
+        license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
+        scheduler=PolarsSchedulerConfig(),
+        **kwargs,
+    )
+
+
+def pool(workers: InMemoryWorkers, target: int = 0, **kwargs: typing.Any) -> WorkerPool:
+    return WorkerPool(workers, config(**kwargs), target)
+
+
+def test_ensure_puts_one_worker_per_node() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+
+    assert pool(workers).ensure(2) == {slot(NODE_A), slot(NODE_B)}
+    assert workers.running() == {slot(NODE_A), slot(NODE_B)}
+
+
+def test_a_slot_is_the_worker_of_its_node_prefix_and_index() -> None:
+    assert WorkerSlot(NODE_A, 0).worker_id == WorkerId("aaaaaaaaaaaa", 0)
+    assert WorkerSlot(NODE_B, 3).worker_id == WorkerId("bbbbbbbbbbbb", 3)
+
+
+def test_ensure_skips_dead_cpuless_and_too_small_nodes() -> None:
+    workers = InMemoryWorkers(
+        node(NODE_A, cpus=0),  # e.g. a head started with --num-cpus=0
+        node(NODE_B, alive=False),
+        node(NODE_C, cpus=2, memory=2e9),
+        node("d" * 56, cpus=8, memory=1e9),
+    )
+    worker = PolarsWorkerConfig(cpus_hint=2, memory_hint=2_000_000_000)
+
+    assert pool(workers, worker=worker).ensure(1) == {slot(NODE_C)}
+
+
+def test_ensure_spreads_before_stacking() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+
+    names = pool(workers, workers_per_node=2).ensure(3)
+
+    assert names == {slot(NODE_A, 0), slot(NODE_B, 0), slot(NODE_A, 1)}
+
+
+def test_ensure_stacks_no_more_than_a_node_fits() -> None:
+    workers = InMemoryWorkers(node(NODE_A, cpus=2), node(NODE_B, cpus=16))
+
+    worker = PolarsWorkerConfig(cpus_hint=2, memory_hint=1)
+
+    names = pool(workers, workers_per_node=3, worker=worker).ensure(4)
+
+    assert names == {slot(NODE_A, 0), slot(NODE_B, 0), slot(NODE_B, 1), slot(NODE_B, 2)}
+
+
+def test_ensure_reuses_a_freed_slot() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    workers.workers[slot(NODE_A, 1)] = NODE_A
+
+    names = pool(workers, workers_per_node=3).ensure(3)
+
+    assert names == {slot(NODE_A, 0), slot(NODE_A, 1), slot(NODE_A, 2)}
+
+
+def test_ensure_never_adds_to_or_removes_from_a_larger_pool() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers)
+    worker_pool.ensure(3)
+
+    assert worker_pool.ensure(1) == {slot(NODE_A), slot(NODE_B), slot(NODE_C)}
+
+
+def test_ensure_without_room_starts_nothing() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+
+    with pytest.raises(
+        NoRoomForWorkers, match="Cannot start 3 workers: 0 running, and room for 2"
+    ):
+        pool(workers).ensure(3)
+
+    assert workers.running() == set()
+
+
+def test_rescale_up_starts_what_fits_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers)
+
+    worker_pool.rescale(3)
+
+    assert workers.running() == {slot(NODE_A), slot(NODE_B)}
+    assert worker_pool.status().target == 3
+    assert "Only room for 2 of the 3 missing workers" in caplog.text
+
+
+def test_repeated_rescale_up_adds_no_extra_workers() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers)
+
+    for _ in range(3):
+        worker_pool.rescale(2)
+
+    assert workers.running() == {slot(NODE_A), slot(NODE_B)}
+
+
+@pytest.mark.parametrize(("requested", "clamped"), [(0, 1), (1, 1), (2, 2), (3, 2)])
+def test_rescale_is_clamped_to_min_and_max_workers(
+    requested: int, clamped: int
+) -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers, min_workers=1, max_workers=2)
+
+    worker_pool.rescale(requested)
+
+    assert worker_pool.status() == (workers.running(), clamped)
+    assert len(workers.running()) == clamped
+
+
+def test_rescale_to_zero_removes_every_worker() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers)
+    worker_pool.ensure(2)
+
+    worker_pool.rescale(0, keep={str(slot(NODE_A))})
+
+    assert workers.running() == set()
+
+
+def test_rescale_down_removes_stacked_workers_first() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, workers_per_node=2)
+    worker_pool.ensure(4)
+
+    worker_pool.rescale(2)
+
+    assert workers.running() == {slot(NODE_A, 0), slot(NODE_B, 0)}
+
+
+def test_rescale_down_removes_workers_of_lost_nodes_first() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers)
+    worker_pool.ensure(3)
+    workers.nodes_by_id[NODE_A] = node(NODE_A, alive=False)  # its worker not gone yet
+
+    worker_pool.rescale(2)
+
+    assert workers.running() == {slot(NODE_B), slot(NODE_C)}
+
+
+def test_rescale_down_deletes_the_workers_named() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers)
+    worker_pool.ensure(3)
+
+    # an engine instance ID, an actor name, and a name that is no worker
+    worker_pool.rescale(
+        1, delete={f"{slot(NODE_A)}-0123abcd", str(slot(NODE_C)), "nope"}
+    )
+
+    assert workers.running() == {slot(NODE_B)}
+
+
+def test_rescale_down_keeps_the_workers_named() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers)
+    worker_pool.ensure(3)
+
+    worker_pool.rescale(1, keep={f"{slot(NODE_B)}-0123abcd", "nope"})
+
+    assert workers.running() == {slot(NODE_B)}
+
+
+def test_rescale_down_deletes_then_keeps() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers)
+    worker_pool.ensure(3)
+
+    worker_pool.rescale(
+        1, delete={str(slot(NODE_A))}, keep={str(slot(NODE_A)), str(slot(NODE_B))}
+    )
+
+    assert workers.running() == {slot(NODE_B)}
+
+
+def test_rescale_down_ignores_names_that_are_no_workers() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), node(NODE_C))
+    worker_pool = pool(workers)
+    worker_pool.ensure(3)
+
+    worker_pool.rescale(2, keep={"nope"})
+
+    assert workers.running() == {slot(NODE_A), slot(NODE_B)}
+
+
+def test_refill_starts_missing_workers_up_to_the_target() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, target=2)
+    worker_pool.ensure(2)
+    workers.kill(slot(NODE_B))
+
+    assert worker_pool.refill(now=0) == [WorkerSlot(NODE_B, 0)]
+    assert workers.running() == {slot(NODE_A), slot(NODE_B)}
+
+
+def test_refill_does_nothing_at_the_target() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, target=1)
+    worker_pool.ensure(1)
+
+    assert worker_pool.refill(now=0) == []
+
+
+def test_refill_moves_the_worker_of_a_lost_node_to_a_new_node() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, target=1)
+    worker_pool.ensure(1)
+
+    workers.remove_node(NODE_A)
+
+    assert worker_pool.refill(now=0) == [WorkerSlot(NODE_B, 0)]
+
+
+def test_refill_backs_off_a_slot_that_keeps_dying() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers, target=1)
+
+    refills = []
+    for now in range(0, 200, 5):
+        workers.workers.clear()  # it died again right away
+        if worker_pool.refill(now=now):
+            refills.append(now)
+
+    assert refills == [0, 10, 30, 70, 150]
+
+
+def test_refill_backoff_is_capped() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers, target=1)
+
+    refills = []
+    for now in range(0, 100_000, 5):
+        workers.workers.clear()
+        if worker_pool.refill(now=now):
+            refills.append(now)
+
+    assert max(b - a for a, b in itertools.pairwise(refills)) == (MAX_REFILL_BACKOFF)
+
+
+def test_refill_forgets_the_backoff_of_a_slot_that_stays_up_through_it() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers, target=1)
+
+    worker_pool.refill(now=0)  # refill 1, backoff 10 s
+    workers.workers.clear()
+    worker_pool.refill(now=10)  # refill 2, backoff 20 s
+    worker_pool.refill(now=1000)  # still up: backoff forgotten
+    workers.workers.clear()
+
+    assert worker_pool.refill(now=1001) == [WorkerSlot(NODE_A, 0)]
+    workers.workers.clear()
+    assert worker_pool.refill(now=1005) == []
+    assert worker_pool.refill(now=1011) == [WorkerSlot(NODE_A, 0)]
+
+
+def test_refill_uses_another_free_slot_while_one_is_backed_off() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, target=1)
+
+    assert worker_pool.refill(now=0) == [WorkerSlot(NODE_A, 0)]
+    workers.kill(slot(NODE_A))
+
+    assert worker_pool.refill(now=5) == [WorkerSlot(NODE_B, 0)]
+
+
+def test_refill_forgets_the_backoff_of_a_lost_node() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers, target=1)
+    worker_pool.refill(now=0)  # backoff 10 s
+
+    workers.remove_node(NODE_A)
+    worker_pool.refill(now=1)
+    workers.nodes_by_id[NODE_A] = node(NODE_A)  # back, e.g. a node that rejoined
+
+    assert worker_pool.refill(now=2) == [WorkerSlot(NODE_A, 0)]
+
+
+def test_refill_warns_only_when_the_shortfall_changes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers)
+
+    worker_pool.rescale(2)
+    worker_pool.refill(now=0)
+    worker_pool.refill(now=1)
+    worker_pool.rescale(3)
+
+    assert [r.getMessage() for r in caplog.records if "Only room" in r.message] == [
+        "Only room for 1 of the 2 missing workers; add nodes or raise workers_per_node",
+        "Only room for 0 of the 2 missing workers; add nodes or raise workers_per_node",
+    ]
+
+
+class SlowStart(InMemoryWorkers):
+    """Workers whose start blocks until released, as a slow Ray call would."""
+
+    def __init__(self, *nodes: Node) -> None:
+        super().__init__(*nodes)
+        self.starting = threading.Event()
+        self.release = threading.Event()
+
+    def start(self, slot: WorkerSlot) -> None:
+        self.starting.set()
+        self.release.wait(5)
+        super().start(slot)
+
+
+def test_a_downscale_during_a_refill_is_not_undone() -> None:
+    workers = SlowStart(node(NODE_A), node(NODE_B))
+    workers.workers[slot(NODE_A)] = NODE_A
+    worker_pool = pool(workers, target=2)
+
+    refill = threading.Thread(target=worker_pool.refill, args=(0,))
+    refill.start()
+    workers.starting.wait(5)
+    rescale = threading.Thread(target=worker_pool.rescale, args=(1,))
+    rescale.start()
+    time.sleep(0.1)  # for the rescale to wait on the refill
+    workers.release.set()
+    refill.join(5)
+    rescale.join(5)
+    worker_pool.refill(now=1)
+
+    assert len(workers.running()) == 1
+
+
+def wait_for(condition: typing.Callable[[], bool]) -> bool:
+    deadline = time.monotonic() + 5
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return condition()
+
+
+def test_refilling_runs_in_the_background_until_halted() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = WorkerPool(workers, config(worker_reconcile_interval=0.01), 2)
+
+    worker_pool.start_refilling()
+    assert wait_for(lambda: len(workers.running()) == 2)
+
+    worker_pool.halt()
+    workers.kill(slot(NODE_A))
+    time.sleep(0.1)
+
+    assert workers.running() == {slot(NODE_B)}
+
+
+def test_no_refilling_at_a_zero_interval() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = WorkerPool(workers, config(worker_reconcile_interval=0), 1)
+
+    worker_pool.start_refilling()
+    time.sleep(0.1)
+
+    assert workers.running() == set()
+
+
+def test_stop_removes_every_worker_for_good() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers)
+    worker_pool.ensure(2)
+
+    worker_pool.stop()
+    worker_pool.refill(now=0)
+
+    assert workers.running() == set()
+    assert worker_pool.status().target == 0
