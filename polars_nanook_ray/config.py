@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from polars_nanook_ray.identity import SCHEDULER
 
-# the scaler HTTP server binds here, on the scheduler node, and the scheduler calls it
+# the scheduler actor serves scaling requests here, and its engine calls it
 SCALER_HOST = "127.0.0.1"
 
 # advertised by every Ray head node, see `ray._private.ray_constants`
@@ -417,8 +417,8 @@ class PolarsScalingConfig(BaseModel):
     enabled: bool = Field(
         default=False,
         description=(
-            "Enable REST-based autoscaling module. When enabled, a dedicated scaler "
-            "actor runs a local HTTP server that our binary pushes scale requests to."
+            "Enable REST-based autoscaling module. When enabled, the scheduler actor "
+            "runs a local HTTP server that our binary pushes scale requests to."
         ),
     )
     port: int = Field(
@@ -453,12 +453,11 @@ class PolarsSchedulerConfig(BaseModel):
     placement_resource: str | None = Field(
         default=HEAD_NODE_RESOURCE,
         description=(
-            "Ray resource pinning the scheduler and the scaler to the node that "
-            "advertises it; each requests a fraction of it. Defaults to the head "
-            "node. Set a custom resource, such as `scheduler_node` given to a node "
-            "with `ray start --resources`, to pin them elsewhere. Set `None` to let "
-            "Ray place the scheduler anywhere; this rules out scaling, as the scaler "
-            "listens on 127.0.0.1 and must share the scheduler's node."
+            "Ray resource pinning the scheduler to the node that advertises it; it "
+            "requests a fraction of it. Defaults to the head node. Set a custom "
+            "resource, such as `scheduler_node` given to a node with `ray start "
+            "--resources`, to pin it elsewhere. Set `None` to let Ray place the "
+            "scheduler anywhere."
         ),
     )
 
@@ -570,16 +569,6 @@ class PolarsSchedulerConfig(BaseModel):
         default_factory=PolarsScalingConfig,
         description="Autoscaling (ScalingService REST callback) configuration.",
     )
-
-    @model_validator(mode="after")
-    def _scaling_needs_placement(self) -> "PolarsSchedulerConfig":
-        if self.placement_resource is None and self.scaling.enabled:
-            msg = (
-                "Scaling requires a `placement_resource`: the scaler must run on the "
-                "scheduler's node."
-            )
-            raise ValueError(msg)
-        return self
 
     def config_static_leader(self, scheduler_host: str) -> dict:
         return {
@@ -767,7 +756,7 @@ class PolarsRayClusterConfig(BaseModel):
     scheduler_max_restarts: int = Field(
         default=3,
         description=(
-            "Ray actor restart limit for the scheduler and the scaler (-1 = "
+            "Ray actor restart limit for the scheduler (-1 = "
             "unlimited). Workers register again with a restarted scheduler, but "
             "queries running when it stopped are lost."
         ),

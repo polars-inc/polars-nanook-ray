@@ -116,9 +116,13 @@ class WorkerPool:
         `num_workers` is clamped to `min_workers` and `max_workers`. When removing,
         `delete` names workers to remove, then `keep` workers to keep while removing
         all the others; both take engine instance IDs or actor names, and ignore other
-        names. Without either, removes the highest indices first.
+        names. Without either, removes the highest indices first. Does nothing once
+        halted.
         """
         with self._lock:
+            if self._halted.is_set():
+                logger.warning("Ignored a rescale to %d workers: halted", num_workers)
+                return
             num_workers = self._clamp(num_workers)
             self._target = num_workers  # first, for no reconcile to undo the removal
             running = self._workers.running()
@@ -160,7 +164,7 @@ class WorkerPool:
             ).start()
 
     def halt(self) -> None:
-        """Stop reconciling, for good; leave the workers running."""
+        """Stop reconciling and rescaling, for good; leave the workers running."""
         self._halted.set()
 
     def stop(self) -> None:

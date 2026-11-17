@@ -68,9 +68,9 @@ def config(
     **kwargs: typing.Any,
 ) -> PolarsRayClusterConfig:
     """Return a cluster config, with `memory` in GiB."""
+    kwargs.setdefault("scheduler", PolarsSchedulerConfig())
     return PolarsRayClusterConfig(
         license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
-        scheduler=PolarsSchedulerConfig(),
         worker=PolarsWorkerConfig(cpus_hint=cpus, memory_hint=memory * GIB),
         worker_reconcile_interval=reconcile_interval,
         **kwargs,
@@ -364,6 +364,18 @@ def test_stop_removes_every_worker_for_good() -> None:
 
     worker_pool.stop()
     worker_pool.reconcile()
+
+    assert workers.running() == set()
+    assert worker_pool.status().target == 0
+
+
+def test_a_stopped_pool_ignores_rescales() -> None:
+    workers = InMemoryWorkers()
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+    worker_pool.stop()
+
+    worker_pool.rescale(2)
 
     assert workers.running() == set()
     assert worker_pool.status().target == 0

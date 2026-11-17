@@ -1,11 +1,10 @@
 import json
 import time
+import urllib.error
 import urllib.request
 
 import pytest
-import ray
 
-from polars_nanook_ray.actors import SCALER_NAME_PREFIX
 from polars_nanook_ray.config import SCALER_HOST
 from polars_nanook_ray.identity import WorkerId, list_workers
 
@@ -114,8 +113,9 @@ def test_scaling_disabled(ray_cluster: RayClusterFactory) -> None:
         num_workers=1,
     )
 
-    with pytest.raises(ValueError, match=SCALER_NAME_PREFIX):
-        ray.get_actor(SCALER_NAME_PREFIX, namespace=cluster.config.cluster_id)
+    port = cluster.config.scheduler.scaling.port
+    with pytest.raises(urllib.error.URLError):
+        urllib.request.urlopen(f"http://{SCALER_HOST}:{port}/scale_config")
 
 
 @pytest.mark.parametrize("max_workers", [8, None])
