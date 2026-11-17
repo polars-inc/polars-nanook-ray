@@ -64,8 +64,6 @@ class PolarsWorkerActor:
         if self._runner.is_started():
             return
 
-        self._runner.stop_orphans(self.config_cluster.cluster_id)
-
         ports = resolve_ports(
             {
                 "task_port": self.config_cluster.worker.task_port,

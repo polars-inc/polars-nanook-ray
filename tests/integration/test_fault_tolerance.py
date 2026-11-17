@@ -66,7 +66,7 @@ def test_worker_restart_cleanup(
     actor_pid = _actor_pid(cluster_id, name)
     binary_pid = ray.get(actor.get_worker_pid.remote())
 
-    # killing the actor will orphan the child process
+    # the binary dies with its actor's process
     os.kill(actor_pid, signal.SIGKILL)
     time.sleep(2)
 
@@ -122,11 +122,8 @@ def test_scheduler_restarts_and_workers_register_again(
     sched_pid = _actor_pid(cluster_id, SCHEDULER.actor_name)
     binary_pid = ray.get(scheduler_actor.get_scheduler_pid.remote())
 
-    # the actor's death orphans the binary, the binary's death exits the actor
+    # the binary dies with the actor, and the actor exits with the binary
     os.kill(sched_pid if kill == "actor" else binary_pid, signal.SIGKILL)
-    if kill == "actor":
-        with contextlib.suppress(ProcessLookupError):
-            os.kill(binary_pid, signal.SIGKILL)
 
     # Ray restarts the scheduler on the head, with no cluster.start() needed
     deadline = time.monotonic() + 60
