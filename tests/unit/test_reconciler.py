@@ -3,6 +3,7 @@ from polars_nanook_ray.actors.placement import (
     WorkerPoolReconciler,
     WorkerSlot,
 )
+from polars_nanook_ray.identity import WorkerId
 
 SLOT_A = WorkerSlot("a" * 56, 0)
 SLOT_B = WorkerSlot("b" * 56, 0)
@@ -11,16 +12,16 @@ SLOT_B = WorkerSlot("b" * 56, 0)
 class Pool:
     def __init__(self, free: list[WorkerSlot]) -> None:
         self.free = free
-        self.running: set[str] = set()
-        self.started: list[str] = []
+        self.running: set[WorkerId] = set()
+        self.started: list[WorkerId] = []
 
-    def plan(self, target: int, running: set[str]) -> list[WorkerSlot]:
+    def plan(self, target: int, running: set[WorkerId]) -> list[WorkerSlot]:
         missing = target - len(running)
-        return [s for s in self.free if s.name not in running][: max(missing, 0)]
+        return [s for s in self.free if s.worker_id not in running][: max(missing, 0)]
 
     def start(self, slot: WorkerSlot) -> None:
-        self.started.append(slot.name)
-        self.running.add(slot.name)
+        self.started.append(slot.worker_id)
+        self.running.add(slot.worker_id)
 
     def reconciler(self, interval: float = 10) -> WorkerPoolReconciler:
         return WorkerPoolReconciler(
@@ -30,15 +31,15 @@ class Pool:
 
 def test_refills_missing_workers_up_to_the_target() -> None:
     pool = Pool([SLOT_A, SLOT_B])
-    pool.running = {SLOT_A.name}
+    pool.running = {SLOT_A.worker_id}
 
     assert pool.reconciler().reconcile(2, now=0) == [SLOT_B]
-    assert pool.running == {SLOT_A.name, SLOT_B.name}
+    assert pool.running == {SLOT_A.worker_id, SLOT_B.worker_id}
 
 
 def test_does_nothing_at_the_target() -> None:
     pool = Pool([SLOT_A])
-    pool.running = {SLOT_A.name}
+    pool.running = {SLOT_A.worker_id}
 
     assert pool.reconciler().reconcile(1, now=0) == []
 

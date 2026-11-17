@@ -15,16 +15,15 @@ from polars_nanook_ray.actors import (
     PolarsScalerActor,
     PolarsSchedulerActor,
     WorkerSlot,
-    list_worker_names,
     plan_workers,
     resolve_actor_handles,
     resolve_scaler_name,
-    resolve_scheduler_name,
     start_worker,
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import placement_options
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +79,7 @@ class PolarsRayCluster:
 
         self._scaler_actor: typing.Any = None
         self._scheduler_actor: typing.Any = None
-        self._worker_actors: dict[str, typing.Any] = {}
+        self._worker_actors: dict[WorkerId, typing.Any] = {}
 
     def _actor_exists(self, name: str) -> bool:
         try:
@@ -99,11 +98,9 @@ class PolarsRayCluster:
         )
 
     def _start_scheduler(self) -> None:
-        actor_name = resolve_scheduler_name()
-
         try:
             self._scheduler_actor = ray.get_actor(
-                actor_name,
+                SCHEDULER.actor_name,
                 namespace=self.config.cluster_id,
             )
         except ValueError:
@@ -113,14 +110,14 @@ class PolarsRayCluster:
             return
 
         self._scheduler_actor = PolarsSchedulerActor.options(  # type: ignore[attr-defined]
-            name=actor_name,
+            name=SCHEDULER.actor_name,
             namespace=self.config.cluster_id,
             lifetime="detached",
             max_restarts=self.config.scheduler_max_restarts,
             **self._scheduler_options(),
         ).remote(self.config)
 
-    def _plan_workers(self, running: set[str]) -> list[WorkerSlot]:
+    def _plan_workers(self, running: set[WorkerId]) -> list[WorkerSlot]:
         slots = plan_workers(self.config, self.config.num_workers, running)
 
         if len(running) + len(slots) < self.config.num_workers:
@@ -133,7 +130,7 @@ class PolarsRayCluster:
 
         return slots
 
-    def _start_workers(self, running: set[str], slots: list[WorkerSlot]) -> None:
+    def _start_workers(self, running: set[WorkerId], slots: list[WorkerSlot]) -> None:
         if self._scheduler_actor is None:
             msg = "Cannot start workers: scheduler actor is not available."
             raise RuntimeError(msg)
@@ -144,11 +141,13 @@ class PolarsRayCluster:
         )
 
         worker_actors = resolve_actor_handles(running, self.config.cluster_id)
-        for name in worker_actors:
-            logger.info("Reconnected to existing worker %s", name)
+        for worker in worker_actors:
+            logger.info("Reconnected to existing worker %s", worker)
 
         for slot in slots:
-            worker_actors[slot.name] = start_worker(self.config, slot, scheduler_host)
+            worker_actors[slot.worker_id] = start_worker(
+                self.config, slot, scheduler_host
+            )
 
         self._worker_actors = worker_actors
 
@@ -299,10 +298,10 @@ class PolarsRayCluster:
         Tops the worker pool up to `num_workers`, one per free slot on the nodes, and
         keeps any worker already running, so reconnecting never adds workers.
         """
-        running = list_worker_names(self.config.cluster_id)
+        running = list_workers(self.config.cluster_id)
         slots = self._plan_workers(running)
 
-        if not self._actor_exists(resolve_scheduler_name()):
+        if not self._actor_exists(SCHEDULER.actor_name):
             self._scheduler_options()  # fail before the scaler is created
 
         if self.config.scheduler.scaling.enabled:
@@ -327,7 +326,7 @@ class PolarsRayCluster:
         """Terminate all the actors (scaler, scheduler, workers)."""
         try:
             self._scheduler_actor = ray.get_actor(
-                resolve_scheduler_name(),
+                SCHEDULER.actor_name,
                 namespace=self.config.cluster_id,
             )
         except ValueError:
@@ -359,7 +358,7 @@ class PolarsRayCluster:
                 )
 
         workers = resolve_actor_handles(
-            list_worker_names(self.config.cluster_id), self.config.cluster_id
+            list_workers(self.config.cluster_id), self.config.cluster_id
         )
         if workers:
             logger.info("Stopping %d worker(s)...", len(workers))

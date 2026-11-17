@@ -15,9 +15,9 @@ def _node(node_id: str, *, alive: bool = True, **resources: float) -> dict:
     return {"NodeID": node_id, "Alive": alive, "Resources": resources}
 
 
-def test_slot_name_is_derived_from_node_id_and_index() -> None:
-    assert WorkerSlot(NODE_A, 0).name == "worker-aaaaaaaaaaaa-0"
-    assert WorkerSlot(NODE_B, 3).name == "worker-bbbbbbbbbbbb-3"
+def test_slot_worker_is_named_after_its_node_and_index() -> None:
+    assert WorkerSlot(NODE_A, 0).worker_id.actor_name == "worker-aaaaaaaaaaaa-0"
+    assert WorkerSlot(NODE_B, 3).worker_id.actor_name == "worker-bbbbbbbbbbbb-3"
 
 
 def test_capacity_skips_dead_and_cpuless_nodes() -> None:
@@ -73,7 +73,7 @@ def test_plan_puts_one_worker_per_node() -> None:
 
 
 def test_plan_skips_nodes_that_already_have_a_worker() -> None:
-    taken = {WorkerSlot(NODE_A, 0).name}
+    taken = {WorkerSlot(NODE_A, 0).worker_id}
 
     slots = _plan_worker_slots({NODE_A: 1, NODE_B: 1, NODE_C: 1}, taken=taken, count=2)
 
@@ -97,7 +97,7 @@ def test_plan_spreads_before_stacking_when_several_workers_per_node() -> None:
 
 
 def test_plan_reuses_a_freed_slot() -> None:
-    taken = {WorkerSlot(NODE_A, 1).name}
+    taken = {WorkerSlot(NODE_A, 1).worker_id}
 
     slots = _plan_worker_slots({NODE_A: 3}, taken=taken, count=2)
 

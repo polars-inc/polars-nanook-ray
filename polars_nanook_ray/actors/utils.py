@@ -9,13 +9,16 @@ import typing
 import ray
 from ray.actor import ActorHandle
 
+if typing.TYPE_CHECKING:
+    from polars_nanook_ray.identity import Identity, WorkerId
+
 logger = logging.getLogger(__name__)
 
 
-def _resolve_config_path(instance_id: str) -> pathlib.Path:
+def _resolve_config_path(identity: "Identity") -> pathlib.Path:
     return pathlib.Path(
         tempfile.gettempdir(),
-        f"{instance_id}-{secrets.token_hex(8)}",
+        f"{identity.actor_name}-{secrets.token_hex(8)}",
         "config.toml",
     )
 
@@ -42,14 +45,16 @@ def _handle_sigterm(func: typing.Callable[[], None]) -> None:
     signal.signal(signal.SIGTERM, _handler)
 
 
-def resolve_actor_handles(names: set[str], namespace: str) -> dict[str, ActorHandle]:
-    actors: dict[str, ActorHandle] = {}
+def resolve_actor_handles(
+    workers: typing.Collection["WorkerId"], namespace: str
+) -> dict["WorkerId", ActorHandle]:
+    actors: dict[WorkerId, ActorHandle] = {}
 
-    for name in names:
+    for worker in workers:
         try:
-            actors[name] = ray.get_actor(name, namespace=namespace)
+            actors[worker] = ray.get_actor(worker.actor_name, namespace=namespace)
         except ValueError:
-            logger.warning("Actor %s not found, skipping", name)
+            logger.warning("Actor %s not found, skipping", worker)
 
     return actors
 

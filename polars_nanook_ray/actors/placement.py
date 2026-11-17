@@ -5,13 +5,10 @@ import typing
 
 import ray
 
+from polars_nanook_ray.identity import WorkerId
+
 if typing.TYPE_CHECKING:
     from polars_nanook_ray.config import PolarsRayClusterConfig
-
-WORKER_NAME_PREFIX = "worker"
-
-# keeps worker names short; a prefix of a node ID is unique in practice
-NODE_ID_LENGTH = 12
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +21,8 @@ class WorkerSlot:
     index: int
 
     @property
-    def name(self) -> str:
-        return f"{WORKER_NAME_PREFIX}-{self.node_id[:NODE_ID_LENGTH]}-{self.index}"
+    def worker_id(self) -> WorkerId:
+        return WorkerId.of(self.node_id, self.index)
 
 
 def _fits(total: float, request: float) -> float:
@@ -58,7 +55,7 @@ def _node_capacities(
 
 def _plan_worker_slots(
     capacities: dict[str, int],
-    taken: typing.Collection[str],
+    taken: typing.Collection[WorkerId],
     count: int,
 ) -> list[WorkerSlot]:
     free = (
@@ -66,32 +63,22 @@ def _plan_worker_slots(
         for index in range(max(capacities.values(), default=0))
         for node_id in sorted(capacities)
         if index < capacities[node_id]
-        and (slot := WorkerSlot(node_id, index)).name not in taken
+        and (slot := WorkerSlot(node_id, index)).worker_id not in taken
     )
     return list(itertools.islice(free, max(count, 0)))
-
-
-def list_worker_names(namespace: str) -> set[str]:
-    """Return the names of the live workers in `namespace`, straight from the GCS."""
-    return {
-        actor["name"]
-        for actor in ray.util.list_named_actors(all_namespaces=True)
-        if actor["namespace"] == namespace
-        and actor["name"].startswith(f"{WORKER_NAME_PREFIX}-")
-    }
 
 
 def plan_workers(
     config: "PolarsRayClusterConfig",
     target: int,
-    running: typing.Collection[str],
+    running: typing.Collection[WorkerId],
 ) -> list[WorkerSlot]:
     """Return the slots to start workers in for the pool to reach `target` workers.
 
-    `running` holds the names of the live workers, as `list_worker_names` returns
-    them. Each slot is on an alive node with CPUs, at most `workers_per_node` per
-    node and no more than the node's CPUs and memory fit, and is not taken by a
-    running worker. Returns fewer slots when the nodes are full; callers report it.
+    `running` holds the live workers, as `list_workers` returns them. Each slot is on
+    an alive node with CPUs, at most `workers_per_node` per node and no more than the
+    node's CPUs and memory fit, and is not taken by a running worker. Returns fewer
+    slots when the nodes are full; callers report it.
     """
     missing = target - len(running)
     if missing <= 0:
@@ -131,24 +118,24 @@ class WorkerPoolReconciler:
     def __init__(
         self,
         interval: float,
-        plan: typing.Callable[[int, set[str]], list[WorkerSlot]],
+        plan: typing.Callable[[int, set[WorkerId]], list[WorkerSlot]],
         start: typing.Callable[[WorkerSlot], object],
-        running: typing.Callable[[], set[str]],
+        running: typing.Callable[[], set[WorkerId]],
     ) -> None:
         self.interval = interval
         self._plan = plan
         self._start = start
         self._running = running
-        # slot name -> (refills in a row, earliest time to refill it again)
-        self._backoff: dict[str, tuple[int, float]] = {}
+        # slot -> (refills in a row, earliest time to refill it again)
+        self._backoff: dict[WorkerId, tuple[int, float]] = {}
         self._shortfall = 0
 
     def reconcile(self, target: int, now: float) -> list[WorkerSlot]:
         """Start workers on free slots up to `target`; return the slots started."""
         running = self._running()
-        for name, (_, retry_at) in list(self._backoff.items()):
-            if name in running and now >= retry_at:
-                del self._backoff[name]  # stayed up through its backoff
+        for worker, (_, retry_at) in list(self._backoff.items()):
+            if worker in running and now >= retry_at:
+                del self._backoff[worker]  # stayed up through its backoff
 
         slots = self._plan(target, running)
         shortfall = max(target - len(running) - len(slots), 0)
@@ -158,12 +145,12 @@ class WorkerPoolReconciler:
 
         started = []
         for slot in slots:
-            refills, retry_at = self._backoff.get(slot.name, (0, 0.0))
+            refills, retry_at = self._backoff.get(slot.worker_id, (0, 0.0))
             if now < retry_at:
                 continue
-            logger.warning("Refilling worker slot %s", slot.name)
+            logger.warning("Refilling worker slot %s", slot.worker_id)
             self._start(slot)
             delay = min(self.interval * 2**refills, MAX_REFILL_BACKOFF)
-            self._backoff[slot.name] = (refills + 1, now + delay)
+            self._backoff[slot.worker_id] = (refills + 1, now + delay)
             started.append(slot)
         return started

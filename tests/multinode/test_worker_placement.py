@@ -10,9 +10,10 @@ import pytest
 import ray
 from ray.actor import ActorHandle
 
-from polars_nanook_ray.actors import WorkerSlot, list_worker_names
+from polars_nanook_ray.actors import WorkerSlot
 from polars_nanook_ray.cluster import PolarsRayCluster
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.identity import list_workers
 
 from .utils import head_cluster, make_config, node_id, run_scheduler, wait_for_workers
 
@@ -53,10 +54,10 @@ def test_one_worker_per_cpu_node(
 
     workers = wait_for_workers(config.cluster_id, NUM_CPU_NODES)
 
-    node_ids = {name: node_id(actor) for name, actor in workers.items()}
+    node_ids = {worker: node_id(actor) for worker, actor in workers.items()}
     assert set(node_ids.values()) == cpu_node_ids
-    for name, node in node_ids.items():
-        assert name == WorkerSlot(node, 0).name
+    for worker, node in node_ids.items():
+        assert worker == WorkerSlot(node, 0).worker_id
 
 
 def test_repeated_upscale_adds_no_extra_workers(
@@ -78,7 +79,7 @@ def test_several_workers_per_node_spread_first(
     workers = wait_for_workers(config.cluster_id, 3)
 
     assert len({node_id(actor) for actor in workers.values()}) == NUM_CPU_NODES
-    assert sorted(name[-2:] for name in workers) == ["-0", "-0", "-1"]
+    assert sorted(worker.index for worker in workers) == [0, 0, 1]
 
 
 def test_worker_host_is_the_node_ip(
@@ -103,7 +104,7 @@ def test_stop_without_dashboard(
 
     PolarsRayCluster(config).stop()
 
-    assert list_worker_names(config.cluster_id) == set()
+    assert list_workers(config.cluster_id) == set()
 
 
 @pytest.mark.parametrize("config", [{"num_workers": NUM_CPU_NODES + 1}], indirect=True)
@@ -114,4 +115,4 @@ def test_start_fails_fast_without_room(
     with pytest.raises(RuntimeError, match="Cannot start 3 workers"):
         PolarsRayCluster(config).start()
 
-    assert list_worker_names(config.cluster_id) == set()
+    assert list_workers(config.cluster_id) == set()

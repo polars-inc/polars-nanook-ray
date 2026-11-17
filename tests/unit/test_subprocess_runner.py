@@ -5,6 +5,7 @@ import threading
 import pytest
 
 from polars_nanook_ray import subprocess_runner as runner_module
+from polars_nanook_ray.identity import WorkerId
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 
@@ -30,7 +31,7 @@ def _runner(tmp_path: pathlib.Path, script: str) -> SubprocessRunner:
     binary = tmp_path / "binary"
     binary.write_text(f"#!/bin/sh\n{script}\n")
     binary.chmod(0o755)
-    return SubprocessRunner(str(binary), "worker-0")
+    return SubprocessRunner(str(binary), WorkerId.of("a" * 56, 0))
 
 
 def test_actor_exits_when_its_binary_exits_unasked(

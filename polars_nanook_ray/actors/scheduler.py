@@ -9,7 +9,6 @@ import ray
 from polars_nanook_ray.actors.placement import (
     WorkerPoolReconciler,
     WorkerSlot,
-    list_worker_names,
     plan_workers,
     warn_no_room,
 )
@@ -23,7 +22,7 @@ from polars_nanook_ray.actors.utils import (
 )
 from polars_nanook_ray.actors.worker import start_worker
 from polars_nanook_ray.config import PolarsRayClusterConfig
-from polars_nanook_ray.engine_instance_id import EngineInstanceId
+from polars_nanook_ray.identity import SCHEDULER, WorkerId, identify, list_workers
 from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
@@ -31,25 +30,14 @@ if typing.TYPE_CHECKING:
     import pathlib
 
 
-SCHEDULER_NAME_PREFIX = "scheduler"
-
 logger = logging.getLogger(__name__)
 
 
-def resolve_scheduler_name() -> str:
-    return SCHEDULER_NAME_PREFIX
-
-
-def _resolve_worker_actor_names(
-    instance_ids: set[str] | None, worker_names: set[str]
-) -> set[str] | None:
-    """Return the worker actors the engine instance IDs or actor names given are."""
-    names = {
-        instance_id.actor_name
-        for value in instance_ids or ()
-        if (instance_id := EngineInstanceId.parse(value)) is not None
-    }
-    return names & worker_names or None
+def _live_workers_of(
+    requested: set[str] | None, live: set[WorkerId]
+) -> set[WorkerId] | None:
+    """Return the live workers the engine instance IDs or actor names given are."""
+    return live & {identify(value) for value in requested or ()} or None
 
 
 @ray.remote
@@ -61,12 +49,8 @@ class PolarsSchedulerActor:
 
         self.num_workers: int = config.num_workers  # initial value
 
-        name = resolve_scheduler_name()
-        self._config_path: pathlib.Path = _resolve_config_path(name)
-        self._runner = SubprocessRunner(
-            config.binary_path,
-            name,
-        )
+        self._config_path: pathlib.Path = _resolve_config_path(SCHEDULER)
+        self._runner = SubprocessRunner(config.binary_path, SCHEDULER)
 
         self.scheduler_host: str = self._runner.host
 
@@ -85,14 +69,14 @@ class PolarsSchedulerActor:
                 target=self._reconcile_workers, name="reconcile-workers", daemon=True
             ).start()
 
-    def _plan_workers(self, target: int, running: set[str]) -> list[WorkerSlot]:
+    def _plan_workers(self, target: int, running: set[WorkerId]) -> list[WorkerSlot]:
         return plan_workers(self.config_cluster, target, running)
 
     def _start_worker(self, slot: WorkerSlot) -> None:
         start_worker(self.config_cluster, slot, self.scheduler_host)
 
-    def _list_workers(self) -> set[str]:
-        return list_worker_names(self.config_cluster.cluster_id)
+    def _list_workers(self) -> set[WorkerId]:
+        return list_workers(self.config_cluster.cluster_id)
 
     def _reconcile_workers(self) -> None:
         while not self._reconciling.wait(self._reconciler.interval):
@@ -104,16 +88,14 @@ class PolarsSchedulerActor:
     def __ray_shutdown__(self) -> None:
         self.stop()
 
-    def _remove_workers(self, worker_actor_names: set[str]) -> None:
-        actors = resolve_actor_handles(
-            worker_actor_names, self.config_cluster.cluster_id
-        )
+    def _remove_workers(self, workers: set[WorkerId]) -> None:
+        actors = resolve_actor_handles(workers, self.config_cluster.cluster_id)
         terminate_actors(
             list(actors.values()), self.config_cluster.actor_response_timeout
         )
 
-        for actor_name in worker_actor_names:
-            logger.info("Removed worker %s", actor_name)
+        for worker in workers:
+            logger.info("Removed worker %s", worker)
 
     def start(self) -> None:
         """Spawn the scheduler process, if not already running."""
@@ -185,10 +167,10 @@ class PolarsSchedulerActor:
         """Return the OS process ID of the scheduler binary subprocess."""
         return self._runner.pid()
 
-    def get_scaling_status(self) -> dict[str, int | set[str] | None]:
+    def get_scaling_status(self) -> dict[str, int | set[WorkerId] | None]:
         """Return the current/desired worker counts and configured bounds."""
         return {
-            "available": list_worker_names(self.config_cluster.cluster_id),
+            "available": self._list_workers(),
             "desired": self.num_workers,
             "min": self.config_cluster.min_workers,
             "max": self.config_cluster.max_workers,
@@ -209,13 +191,12 @@ class PolarsSchedulerActor:
             and `max_workers`. If neither `delete` nor `keep` is given, random workers
             are removed.
         delete
-            Set of worker instances to terminate, as engine instance IDs or actor
-            names. Applied before `keep`. Names that are not worker actors are
-            ignored.
+            Set of workers to terminate, as engine instance IDs or actor names.
+            Applied before `keep`. Values that are not live workers are ignored.
         keep
-            Set of worker instances to keep running, as engine instance IDs or actor
-            names, while terminating all the others not already removed via
-            `delete`. Names that are not worker actors are ignored.
+            Set of workers to keep running, as engine instance IDs or actor names,
+            while terminating all the others not already removed via `delete`.
+            Values that are not live workers are ignored.
 
         """
         min_workers = self.config_cluster.min_workers
@@ -238,26 +219,26 @@ class PolarsSchedulerActor:
         # set first, for the reconciler not to refill the workers removed below
         self.num_workers = num_workers
 
-        worker_names = self._list_workers()
+        workers = self._list_workers()
 
-        _delete = _resolve_worker_actor_names(delete, worker_names)
-        _keep = _resolve_worker_actor_names(keep, worker_names)
+        _delete = _live_workers_of(delete, workers)
+        _keep = _live_workers_of(keep, workers)
 
-        if len(worker_names) < num_workers:
-            slots = self._plan_workers(num_workers, worker_names)
-            if len(worker_names) + len(slots) < num_workers:
-                warn_no_room(len(slots), num_workers - len(worker_names))
+        if len(workers) < num_workers:
+            slots = self._plan_workers(num_workers, workers)
+            if len(workers) + len(slots) < num_workers:
+                warn_no_room(len(slots), num_workers - len(workers))
             for slot in slots:
                 self._start_worker(slot)
 
-        elif len(worker_names) > num_workers:
+        elif len(workers) > num_workers:
             if num_workers == 0:
-                to_remove = set(worker_names)
+                to_remove = set(workers)
             elif _delete is None and _keep is None:
-                to_remove = set(list(worker_names)[: len(worker_names) - num_workers])
+                to_remove = set(list(workers)[: len(workers) - num_workers])
             else:
                 to_remove = set()
-                remaining = worker_names
+                remaining = workers
                 if _delete is not None:
                     to_remove |= _delete
                     remaining = remaining - _delete

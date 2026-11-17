@@ -5,6 +5,8 @@ import typing
 import toml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from polars_nanook_ray.identity import SCHEDULER
+
 # the scaler HTTP server binds here, on the scheduler node, and the scheduler calls it
 SCALER_HOST = "127.0.0.1"
 
@@ -581,7 +583,7 @@ class PolarsSchedulerConfig(BaseModel):
 
     def config_static_leader(self, scheduler_host: str) -> dict:
         return {
-            "leader_instance_id": "scheduler",
+            "leader_instance_id": SCHEDULER.instance_id,
             "scheduler_service": {
                 "public_addr": f"{scheduler_host}:{self.worker_registration_port}"
             },
@@ -891,7 +893,7 @@ class PolarsRayClusterConfig(BaseModel):
     def config_scheduler(self, scheduler_host: str) -> str:
         """Render the TOML configuration of the scheduler node."""
         doc: dict = {
-            "instance_id": "scheduler",
+            "instance_id": SCHEDULER.instance_id,
             "cluster_id": self.cluster_id,
             "cluster_mode": "ray",
             "memory_limit": self.scheduler.memory_limit,
