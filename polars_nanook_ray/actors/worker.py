@@ -122,9 +122,7 @@ class PolarsWorkerActor:
 class RayWorkers:
     """The worker actors of one cluster, on the nodes of the Ray cluster."""
 
-    def __init__(
-        self, config: PolarsRayClusterConfig, scheduler_host: str | None = None
-    ) -> None:
+    def __init__(self, config: PolarsRayClusterConfig, scheduler_host: str) -> None:
         self._config = config
         self._scheduler_host = scheduler_host
         # Ray destroys an owned actor once its owner holds no handle to it
@@ -146,10 +144,6 @@ class RayWorkers:
 
     def start(self, slot: WorkerSlot) -> None:
         """Start the worker of `slot` pinned to its node, unless it already runs."""
-        if self._scheduler_host is None:
-            msg = "Cannot start workers without the scheduler's host"
-            raise RuntimeError(msg)
-
         self._started[slot.worker_id] = PolarsWorkerActor.options(  # type: ignore[attr-defined]
             name=slot.worker_id.actor_name,
             namespace=self._config.cluster_id,

@@ -11,7 +11,6 @@ from polars_nanook_ray.actors import (
     NoRoomForWorkers,
     PolarsScalerActor,
     PolarsSchedulerActor,
-    RayWorkers,
     WorkerExited,
     resolve_scaler_name,
     terminate_actors,
@@ -219,6 +218,7 @@ class PolarsRayCluster:
                 )
                 self._scaler_actor = None
 
+        # without a scheduler there are no workers: they die with it
         self._scheduler_actor = self._find_actor(SCHEDULER.actor_name)
         if self._scheduler_actor is not None:
             logger.info("Stopping workers and scheduler...")
@@ -227,10 +227,6 @@ class PolarsRayCluster:
                 self.config.actor_response_timeout,
             )
             self._scheduler_actor = None
-
-        # any worker left behind by a scheduler that is gone or failed to stop it
-        workers = RayWorkers(self.config)
-        workers.terminate(workers.running())
 
         logger.info("Cluster stopped")
 

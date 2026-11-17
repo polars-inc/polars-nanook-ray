@@ -112,3 +112,19 @@ def test_binary_dies_when_its_actor_process_is_killed(tmp_path: pathlib.Path) ->
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(engine_pid, signal.SIGKILL)
+
+
+def test_binary_starts_without_prctl(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exits: Exits,  # noqa: ARG001
+) -> None:
+    # e.g. a statically linked Python, whose C library exports no prctl
+    monkeypatch.setattr(runner_module.ctypes, "CDLL", lambda *_, **__: object())
+    runner = _runner(tmp_path, "exec sleep 60")
+
+    runner.start(tmp_path / "config.toml", dict(os.environ))
+    try:
+        assert runner.is_alive()
+    finally:
+        runner.stop()
