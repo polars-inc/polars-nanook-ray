@@ -1,4 +1,6 @@
 import pathlib
+import socket
+import sys
 import tempfile
 import time
 import typing
@@ -39,19 +41,64 @@ _STUB_ENGINE = pathlib.Path(tempfile.gettempdir()) / "polars-nanook-ray-stub-eng
 _STUB_ENGINE.write_text("#!/bin/sh\nexec sleep 3600\n")
 _STUB_ENGINE.chmod(0o755)
 
+# an engine that fails once it has read its config, as on a bad license
+FAILING_ENGINE = pathlib.Path(tempfile.gettempdir()) / "polars-nanook-ray-stub-fail"
+FAILING_ENGINE.write_text("#!/bin/sh\nsleep 1\nexit 1\n")
+FAILING_ENGINE.chmod(0o755)
+
+# an engine that listens on the ports of its config, for the actors to be ready
+LISTENING_ENGINE = pathlib.Path(tempfile.gettempdir()) / "polars-nanook-ray-stub-listen"
+LISTENING_ENGINE.write_text(f"""#!{sys.executable}
+import socket, sys, time, tomllib
+
+with open(sys.argv[sys.argv.index("--config-path") + 1], "rb") as file:
+    config = tomllib.load(file)
+
+def bind_addrs(node):
+    for key, value in node.items():
+        if isinstance(value, dict):
+            yield from bind_addrs(value)
+        elif key == "bind_addr":
+            yield value
+
+listeners = []
+for addr in bind_addrs(config):
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        listener.bind(("", int(addr.rsplit(":", 1)[1])))
+    except OSError:  # a fixed port shared by every engine on this one machine
+        continue
+    listener.listen()
+    listeners.append(listener)
+time.sleep(3600)
+""")
+LISTENING_ENGINE.chmod(0o755)
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("", 0))
+        return int(sock.getsockname()[1])
+
 
 def make_config(**kwargs: typing.Any) -> PolarsRayClusterConfig:
-    return PolarsRayClusterConfig(
-        # an engine that keeps running, or its actor exits with it
-        binary_path=str(_STUB_ENGINE),
-        cluster_id=f"polars-nanook-{uuid.uuid4().hex[:8]}",
-        license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
-        scheduler=PolarsSchedulerConfig(
+    # an engine that keeps running, or its actor exits with it
+    kwargs.setdefault("binary_path", str(_STUB_ENGINE))
+    kwargs.setdefault(
+        "scheduler",
+        PolarsSchedulerConfig(
             cpus_hint=0,
             memory_hint=1,
+            client_port=free_port(),
+            worker_registration_port=free_port(),
             observatory=PolarsObservatoryConfig(enabled=False),
         ),
-        worker=PolarsWorkerConfig(cpus_hint=1, memory_hint=1),
+    )
+    kwargs.setdefault("worker", PolarsWorkerConfig(cpus_hint=1, memory_hint=1))
+    return PolarsRayClusterConfig(
+        cluster_id=f"polars-nanook-{uuid.uuid4().hex[:8]}",
+        license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
         **kwargs,
     )
 
