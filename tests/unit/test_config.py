@@ -6,6 +6,7 @@ import toml
 
 from polars_nanook_ray.config import (
     PolarsEnterpriseLicenseConfig,
+    PolarsLicenseServerConfig,
     PolarsRayClusterConfig,
     PolarsSchedulerConfig,
     PolarsWorkerConfig,
@@ -53,3 +54,21 @@ def test_worker_ports_offset_on_single_host(
     assert (
         worker["shuffle_service"]["public_addr"] == f"10.0.0.2:{expected_shuffle_port}"
     )
+
+
+@pytest.mark.parametrize(
+    "license_",
+    [
+        PolarsLicenseServerConfig(uri="https://license.example:50051"),
+        {"license_type": "license_server", "uri": "https://license.example:50051"},
+    ],
+)
+def test_license_server_uri_reaches_scheduler_and_workers(license_) -> None:
+    config = _cluster_config(license=license_)
+
+    scheduler = toml.loads(config.config_scheduler("10.0.0.1"))
+    worker = toml.loads(config.config_worker(0, "10.0.0.2", "10.0.0.1"))
+
+    expected = {"license_server": {"uri": "https://license.example:50051"}}
+    assert scheduler["license"] == expected
+    assert worker["license"] == expected

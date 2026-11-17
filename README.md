@@ -38,7 +38,7 @@ ray start \
   --ray-client-server-port="10001"
 ```
 
-The scheduler, the scaler and the license server always run on the Ray head node,
+The scheduler and the scaler always run on the Ray head node,
 pinned with Ray's built-in `node:__internal_head__` resource; no custom resource is
 needed. They request no CPUs by default, so a head node started with `--num-cpus=0`
 works too.
@@ -177,47 +177,18 @@ The HTTP server is unauthenticated and binds `127.0.0.1`. It accepts only
 
 ## License server
 
-`PolarsRayLicenseServer` manages the Polars Nanook offline license server
-binary as a Ray actor. Ray clusters point their configuration at it via
-`PolarsLicenseServerConfig(uri=...)` and it validates them locally, tracking
-usage into signed reports it periodically emits (and optionally uploads to our
-control plane).
-
-It is standalone: unlike the scheduler/worker/scaler, it is not wired into
-`PolarsRayCluster`. It is meant to be a single, long-lived service that any number
-of separate clusters register against, so its lifecycle (and Ray namespace) is
-managed independently, and it should be started _before_ any
-cluster that points at it.
-
-```py
-import ray
-
-from polars_nanook_ray.config import PolarsRayLicenseServerConfig
-from polars_nanook_ray.license_server import PolarsRayLicenseServer
-
-config = PolarsRayLicenseServerConfig(
-    binary_path="/path/to/binary",
-    report_dir="/var/log/polars/license-server",
-    license_path="/etc/polars/license.json",
-    tls_bundle_path="/etc/polars/tls-bundle.pem",
-)
-
-ray.init(address="auto", namespace="license-server")
-license_server = PolarsRayLicenseServer(config)
-license_server.start()
-```
-
-A cluster then validates against it with:
+To validate the license against a Polars Nanook license server, point the
+cluster at it:
 
 ```py
 from polars_nanook_ray.config import PolarsLicenseServerConfig
 
-license = PolarsLicenseServerConfig(uri=license_server.get_bind_addr())
+license = PolarsLicenseServerConfig(uri="https://license-server.example.com:50051")
 ```
 
-To reconnect to (or stop) an already-running license server from another
-process, call `ray.init()` with the same namespace it was started under, then
-`PolarsRayLicenseServer(config).start()` (reconnects) or `.stop()`.
+The scheduler and the workers register with it. This package does not run the
+license server: deploy it as its own service, outside Ray, and start it before
+any cluster that points at it.
 
 ## Resource requests and limits
 

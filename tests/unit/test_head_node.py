@@ -10,12 +10,10 @@ from polars_nanook_ray.cluster import PolarsRayCluster
 from polars_nanook_ray.config import (
     PolarsEnterpriseLicenseConfig,
     PolarsRayClusterConfig,
-    PolarsRayLicenseServerConfig,
     PolarsScalingConfig,
     PolarsSchedulerConfig,
     PolarsWorkerConfig,
 )
-from polars_nanook_ray.license_server import PolarsRayLicenseServer
 
 
 @ray.remote
@@ -93,16 +91,3 @@ def test_cluster_fails_fast_without_creating_actors(scaling: bool) -> None:
         for actor in ray.util.list_named_actors(all_namespaces=True)
         if actor["namespace"] == config.cluster_id
     ]
-
-
-@pytest.mark.usefixtures("head_node_id")
-def test_license_server_fails_fast() -> None:
-    config = PolarsRayLicenseServerConfig(
-        cpus_hint=1,
-        report_dir="/tmp",
-        license_path="/dev/null",
-        tls_bundle_path="/dev/null",
-    )
-
-    with pytest.raises(RuntimeError, match="license server"):
-        PolarsRayLicenseServer(config).start()
