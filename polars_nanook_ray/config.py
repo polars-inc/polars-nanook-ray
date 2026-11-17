@@ -867,6 +867,14 @@ class PolarsRayClusterConfig(BaseModel):
             )
         return self
 
+    def engine_env(self) -> dict[str, str]:
+        """Return the environment variables the scheduler and worker binaries share."""
+        return {
+            "POLARS_EULA_ACCEPTED": "yes" if self.accept_eula else "no",
+            "PLC_LOG_LEVEL": self.log_level,
+            "RUST_BACKTRACE": self.rust_backtrace,
+        }
+
     def config_bind_ports_scheduler(self) -> dict[str, int | None]:
         """Return the ports the scheduler binds, by name."""
         ports: dict[str, int | None] = {

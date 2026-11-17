@@ -1,5 +1,4 @@
 import logging
-import os
 import typing
 
 import ray
@@ -9,9 +8,6 @@ from polars_nanook_ray.actors.pool import Node, WorkerExited
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _log_to_stderr,
-    _remove_config,
-    _resolve_config_path,
-    _write_config,
     resolve_actor_handles,
     terminate_actors,
 )
@@ -21,8 +17,6 @@ from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 if typing.TYPE_CHECKING:
-    import pathlib
-
     from ray.actor import ActorHandle
 
 
@@ -48,7 +42,6 @@ class PolarsWorkerActor:
         self.worker_id = worker_id
         self.scheduler_host = scheduler_host
 
-        self._config_path: pathlib.Path = _resolve_config_path(self.worker_id)
         self._runner = SubprocessRunner(config.binary_path, self.worker_id)
 
         self.worker_host: str = self._runner.host
@@ -83,37 +76,26 @@ class PolarsWorkerActor:
             task_port=ports["task_port"],
             shuffle_port=ports["shuffle_port"],
         )
-        _write_config(self._config_path, toml)
 
         logger.info(
             "Starting %s on %s as %s", self.worker_id, self.worker_host, instance_id
         )
 
-        env: dict[str, str] = {
-            **os.environ,
-            "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",
-            "POLARS_TEMP_DIR": self.config_cluster.worker.temporary_data_dir,
-            "PLC_LOG_LEVEL": self.config_cluster.log_level,
-            "RUST_BACKTRACE": self.config_cluster.rust_backtrace,
-        }
-
-        self._runner.start(self._config_path, env)
+        self._runner.start(
+            toml,
+            {
+                **self.config_cluster.engine_env(),
+                "POLARS_TEMP_DIR": self.config_cluster.worker.temporary_data_dir,
+            },
+        )
 
     def stop(self) -> None:
         """Terminate the worker process and clean up."""
         self._runner.stop()
 
-        _remove_config(self._config_path)
-
     def is_ready(self) -> bool:
         """Return whether the worker process is alive and listening for tasks."""
-        self._runner._raise_if_exited()
-
-        return (
-            self.task_port is not None
-            and self._runner.is_alive()
-            and self._runner.is_listening(self.task_port)
-        )
+        return self.task_port is not None and self._runner.is_ready(self.task_port)
 
     def get_worker_pid(self) -> int | None:
         """Return the OS process ID of the worker binary subprocess."""
