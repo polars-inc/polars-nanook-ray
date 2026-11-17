@@ -10,10 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 SCALER_HOST = "127.0.0.1"
 
 
-def _instance_name(*parts: str) -> str:
-    return "-".join(("polars-nanook-ray", *parts))
-
-
 def _resolve_absolute_path(path: str) -> pathlib.Path:
     return pathlib.Path(os.path.normpath(pathlib.Path(path).expanduser().absolute()))
 
@@ -960,97 +956,4 @@ class PolarsRayClusterConfig(BaseModel):
         return toml.dumps(doc)
 
     def instance_name(self, instance_id: str) -> str:
-        return _instance_name(self.cluster_id, instance_id)
-
-
-class PolarsRayLicenseServerConfig(BaseModel):
-    """Configuration for a Polars license server process run by a Ray actor.
-
-    Distinct from `PolarsLicenseServerConfig`, which only holds the `uri` consumers (a
-    scheduler/worker) point at to validate their license against a license server; this
-    config runs the server itself.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    # process configuration
-    binary_path: str = Field(
-        default="polars-nanook-license-server",
-        description="Path to the license server binary, on the host.",
-    )
-
-    # ray configuration
-    cpus_hint: int = Field(
-        default=0,
-        description=(
-            "Number of CPU cores requested for the license server actor. It runs on "
-            "the Ray head node, which often has no CPUs to give."
-        ),
-    )
-    memory_hint: int = Field(
-        default=50 * 1024**2,
-        description="Max memory, in bytes, requested for the license server actor.",
-    )
-    startup_timeout: int = Field(
-        default=30,
-        description="Seconds to wait for the license server to become ready.",
-    )
-    actor_response_timeout: int = Field(
-        default=30,
-        description="Seconds to wait for actor calls to complete before giving up.",
-    )
-
-    # native binary configuration
-    grpc_port: int = Field(
-        default=50051,
-        description=(
-            "Port for the gRPC (TLS) service the scheduler and workers register with."
-        ),
-    )
-    http_port: int = Field(
-        default=8081,
-        description="Port for the plain-HTTP `/healthz`, `/readyz`, `/metrics` probes.",
-    )
-    report_dir: str = Field(
-        description=(
-            "Directory holding the SQLite state DB and the signed report ledger."
-        ),
-    )
-    license_path: str = Field(
-        description="Path to the Polars-signed license file.",
-    )
-    tls_bundle_path: str = Field(
-        description=(
-            "Path to the combined PEM bundle holding the license server TLS material."
-        ),
-    )
-    db_disable_file_locking: bool = Field(
-        default=False,
-        description=(
-            "Open the SQLite state DB with file locking disabled. Only safe on a "
-            "single-writer deployment; see the binary's own flag documentation."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _absolute_binary_path(self) -> "PolarsRayLicenseServerConfig":
-        """Convert a relative into an absolute path."""
-        object.__setattr__(
-            self, "binary_path", str(_resolve_absolute_path(self.binary_path))
-        )
-        return self
-
-    def config(self) -> dict[str, str]:
-        env = {
-            "PC_LICENSE_SERVER_BIND": f"0.0.0.0:{self.grpc_port}",
-            "PC_LICENSE_SERVER_HEALTH_BIND": f"0.0.0.0:{self.http_port}",
-            "PC_LICENSE_SERVER_REPORT_DIR": self.report_dir,
-            "PC_LICENSE_SERVER_LICENSE": self.license_path,
-            "PC_LICENSE_SERVER_TLS_BUNDLE_PATH": self.tls_bundle_path,
-        }
-        if self.db_disable_file_locking:
-            env["PC_LICENSE_SERVER_DB_DISABLE_FILE_LOCKING"] = "true"
-        return env
-
-    def instance_name(self, instance_id: str) -> str:
-        return _instance_name(instance_id)
+        return f"polars-nanook-ray-{self.cluster_id}-{instance_id}"
