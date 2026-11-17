@@ -4,7 +4,6 @@ import typing
 import pytest
 import ray
 from ray.cluster_utils import Cluster
-from ray.util.state import list_actors
 
 from polars_nanook_ray.actors.head_node import head_node_options
 from polars_nanook_ray.cluster import PolarsRayCluster
@@ -88,7 +87,12 @@ def test_cluster_fails_fast_without_creating_actors(scaling: bool) -> None:
         PolarsRayCluster(config).start()
 
     assert time.monotonic() - started < config.startup_timeout / 2
-    assert not list_actors(filters=[("ray_namespace", "=", config.cluster_id)])
+    # from the GCS: the State API reads the dashboard of the newest cluster on the host
+    assert not [
+        actor
+        for actor in ray.util.list_named_actors(all_namespaces=True)
+        if actor["namespace"] == config.cluster_id
+    ]
 
 
 @pytest.mark.usefixtures("head_node_id")
