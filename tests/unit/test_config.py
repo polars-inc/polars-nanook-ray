@@ -36,27 +36,6 @@ def test_relative_binary_path_made_absolute() -> None:
 
 
 @pytest.mark.parametrize(
-    ("single_host_cluster", "expected_task_port", "expected_shuffle_port"),
-    [(False, 6000, 7000), (True, 6004, 7004)],
-)
-def test_worker_ports_offset_on_single_host(
-    single_host_cluster: bool,
-    expected_task_port: int,
-    expected_shuffle_port: int,
-) -> None:
-    config = _cluster_config(
-        single_host_cluster=single_host_cluster,
-    )
-
-    worker = toml.loads(config.config_worker(2, "10.0.0.2", "10.0.0.1"))["worker"]
-
-    assert worker["task_service"]["public_addr"] == f"10.0.0.2:{expected_task_port}"
-    assert (
-        worker["shuffle_service"]["public_addr"] == f"10.0.0.2:{expected_shuffle_port}"
-    )
-
-
-@pytest.mark.parametrize(
     "license_",
     [
         PolarsLicenseServerConfig(uri="https://license.example:50051"),
@@ -67,7 +46,11 @@ def test_license_server_uri_reaches_scheduler_and_workers(license_) -> None:
     config = _cluster_config(license=license_)
 
     scheduler = toml.loads(config.config_scheduler("10.0.0.1"))
-    worker = toml.loads(config.config_worker(0, "10.0.0.2", "10.0.0.1"))
+    worker = toml.loads(
+        config.config_worker(
+            0, "10.0.0.2", "10.0.0.1", task_port=6000, shuffle_port=7000
+        )
+    )
 
     expected = {"license_server": {"uri": "https://license.example:50051"}}
     assert scheduler["license"] == expected

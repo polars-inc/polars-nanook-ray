@@ -63,7 +63,6 @@ from polars_nanook_ray.config import (
 )
 
 config = PolarsRayClusterConfig(
-    single_host_cluster=True,
     num_workers=4,
     license=PolarsServiceAccountLicenseConfig(
         workspace_id="<WORKSPACE_ID>",
@@ -106,7 +105,6 @@ from polars_nanook_ray.config import (
 from polars_nanook_ray.context import RayClusterContext
 
 config = PolarsRayClusterConfig(
-    single_host_cluster=True,
     num_workers=4,
     license=PolarsServiceAccountLicenseConfig(
         workspace_id="<WORKSPACE_ID>",
@@ -131,8 +129,9 @@ with RayClusterContext(config) as ctx:
 ray.shutdown()
 ```
 
-In case Ray is running on a single host, set the `single_host_cluster` attribute
-of `PolarsRayClusterConfig` to `True` to offset worker ports and avoid socket collisions.
+Each worker picks free ports on its node, so several workers can share a host.
+To fix them instead, for firewall rules, set `task_port` and `shuffle_port` on
+`PolarsWorkerConfig`; workers then need a node each.
 
 The actors are running in `detached` mode and survive past the script: one can
 reconnect with the same `ray.init()` and `cluster` gymnastics from another

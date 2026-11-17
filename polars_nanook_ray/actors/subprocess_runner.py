@@ -12,6 +12,12 @@ import toml
 
 logger = logging.getLogger(__name__)
 
+
+def service_args(config_path: str | pathlib.Path) -> list[str]:
+    """Return the arguments running the scheduler or worker service of a config."""
+    return ["service", "--config-path", str(config_path)]
+
+
 COMPUTE_SCRIPT = "polars-nanook-compute"
 
 
@@ -92,58 +98,41 @@ class SubprocessRunner:
                 self._handle.wait()
         self._handle = None
 
-    def stop_orphans(self, cluster_id: str, ports: list[int]) -> None:
-        """Reclaim what a crashed previous instance left, before starting anew."""
+    def _is_instance_of(self, cmdline: list[str], cluster_id: str) -> bool:
+        """Return whether the command line runs this instance of the cluster given."""
+        command, args = cmdline[: len(self.command)], cmdline[len(self.command) :]
+        if command != self.command or not args or args != service_args(args[-1]):
+            return False
+
+        try:
+            config = toml.loads(pathlib.Path(args[-1]).read_text())
+        except (OSError, ValueError):  # unreadable, not UTF-8 or not TOML
+            return False
+
+        return (
+            config.get("cluster_id") == cluster_id
+            and config.get("instance_id") == self.instance_id
+        )
+
+    def stop_orphans(self, cluster_id: str) -> None:
         for process in psutil.process_iter():
             try:
-                port = next(
-                    (
-                        conn.laddr.port
-                        for conn in process.net_connections(kind="tcp")
-                        if conn.status == psutil.CONN_LISTEN
-                        and conn.laddr.port in ports
-                    ),
-                    None,
-                )
-                if port is None:
+                if not self._is_instance_of(process.cmdline(), cluster_id):
                     continue
-                cmdline = process.cmdline()
+
+                logger.warning(
+                    "Stopping orphan '%s' process (%d) left over from a previous crash",
+                    self.instance_id,
+                    process.pid,
+                )
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except psutil.TimeoutExpired:
+                    process.kill()
+                    process.wait()
             except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
                 continue
-
-            msg = f"Port {port} is already in use by process ID {process.pid} "
-
-            if cmdline[: len(self.command)] != self.command:
-                msg += "which does not look like one of our own processes."
-                raise RuntimeError(msg)
-
-            try:
-                stale_config = toml.loads(
-                    pathlib.Path(cmdline[len(self.command) + 2]).read_text()
-                )
-            except (IndexError, OSError) as exc:
-                msg += "but we cannot confirm if it is a stale instance."
-                raise RuntimeError(msg) from exc
-
-            if stale_config.get("cluster_id") != cluster_id:
-                msg += f"by a different cluster ('{stale_config.get('cluster_id')}')."
-                raise RuntimeError(msg)
-
-            if stale_config.get("instance_id") != self.instance_id:
-                msg += f"by a different instance ('{stale_config.get('instance_id')}')."
-                raise RuntimeError(msg)
-
-            logger.warning(
-                "Cleaning orphan '%s' process left over from a previous crash",
-                self.instance_id,
-            )
-
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except psutil.TimeoutExpired:
-                process.kill()
-                process.wait()
 
     def is_alive(self) -> bool:
         """Return whether the binary is running right now."""

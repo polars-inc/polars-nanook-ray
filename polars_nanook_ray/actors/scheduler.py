@@ -4,7 +4,8 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
+from polars_nanook_ray.actors.ports import resolve_ports
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner, service_args
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -90,13 +91,9 @@ class PolarsSchedulerActor:
         if self._runner.is_started():
             return
 
-        self._runner.stop_orphans(
-            self.config_cluster.cluster_id,
-            [
-                self.config_cluster.scheduler.worker_registration_port,
-                self.config_cluster.scheduler.client_port,
-            ],
-        )
+        self._runner.stop_orphans(self.config_cluster.cluster_id)
+
+        resolve_ports(self.config_cluster.config_bind_ports_scheduler())
 
         toml = self.config_cluster.config_scheduler(self.scheduler_host)
         _write_config(self._config_path, toml)
@@ -107,7 +104,7 @@ class PolarsSchedulerActor:
             self.scheduler_host,
         )
 
-        args: list[str] = ["service", "--config-path", str(self._config_path)]
+        args = service_args(self._config_path)
         env: dict[str, str] = {
             **os.environ,
             "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",

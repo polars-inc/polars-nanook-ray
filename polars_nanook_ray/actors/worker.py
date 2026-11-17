@@ -5,7 +5,8 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
+from polars_nanook_ray.actors.ports import resolve_ports
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner, service_args
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -55,6 +56,7 @@ class PolarsWorkerActor:
         )
 
         self.worker_host: str = self._runner.host
+        self.task_port: int | None = None
 
         self.start()
         _handle_sigterm(self.stop)
@@ -67,26 +69,28 @@ class PolarsWorkerActor:
         if self._runner.is_started():
             return
 
-        offset = self.config_cluster._worker_port_offset(self.worker_id)
+        self._runner.stop_orphans(self.config_cluster.cluster_id)
 
-        self._runner.stop_orphans(
-            self.config_cluster.cluster_id,
-            [
-                self.config_cluster.worker.task_port + offset,
-                self.config_cluster.worker.shuffle_port + offset,
-            ],
+        ports = resolve_ports(
+            {
+                "task_port": self.config_cluster.worker.task_port,
+                "shuffle_port": self.config_cluster.worker.shuffle_port,
+            }
         )
+        self.task_port = ports["task_port"]
 
         toml = self.config_cluster.config_worker(
             self.worker_id,
             self.worker_host,
             self.scheduler_host,
+            task_port=ports["task_port"],
+            shuffle_port=ports["shuffle_port"],
         )
         _write_config(self._config_path, toml)
 
         logger.info("Starting %s on %s", self.worker_name, self.worker_host)
 
-        args: list[str] = ["service", "--config-path", str(self._config_path)]
+        args = service_args(self._config_path)
         env: dict[str, str] = {
             **os.environ,
             "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",
@@ -107,9 +111,10 @@ class PolarsWorkerActor:
         """Return whether the worker process is alive and listening for tasks."""
         self._runner._raise_if_exited()
 
-        return self._runner.is_alive() and self._runner.is_listening(
-            self.config_cluster.worker.task_port
-            + self.config_cluster._worker_port_offset(self.worker_id)
+        return (
+            self.task_port is not None
+            and self._runner.is_alive()
+            and self._runner.is_listening(self.task_port)
         )
 
     def get_worker_pid(self) -> int | None:

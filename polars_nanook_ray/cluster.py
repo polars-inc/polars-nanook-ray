@@ -41,7 +41,6 @@ class PolarsRayCluster:
     )
 
     config = PolarsRayClusterConfig(
-        # single_host_cluster=True,
         num_workers=4,
         license=PolarsServiceAccountLicenseConfig(
             workspace_id="<WORKSPACE_ID>",
@@ -264,16 +263,6 @@ class PolarsRayCluster:
         scheduler_exists = self._actor_exists(resolve_scheduler_name())
         if not scheduler_exists:
             self._scheduler_options()  # fail before the scaler is created
-
-        self.config._port_availability(
-            check_scheduler=not scheduler_exists,
-            check_workers=[
-                worker_id
-                for worker_id in range(self.config.num_workers)
-                if not self._actor_exists(resolve_worker_name(worker_id))
-            ],
-            check_scaler=not self._actor_exists(resolve_scaler_name()),
-        )
 
         if self.config.scheduler.scaling.enabled:
             self._start_scaler()

@@ -39,33 +39,6 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def _free_port_range(max_num_workers: int = 10) -> int:
-    for _ in range(33):
-        sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM)]
-        sockets[0].bind(("127.0.0.1", 0))
-        port = sockets[0].getsockname()[1]
-
-        is_range_free = True
-        for i in range(1, max_num_workers):
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.bind(("127.0.0.1", port + i * 2))
-            except OSError:
-                is_range_free = False
-                sock.close()
-                break
-            sockets.append(sock)
-
-        for sock in sockets:
-            sock.close()
-
-        if is_range_free:
-            return port
-
-    msg = f"Could not find a free port range of size {max_num_workers}"
-    raise RuntimeError(msg)
-
-
 def _ld_library_path() -> str:
     libdir = sysconfig.get_config_var("LIBDIR")
     ld_library_path = os.environ.get("LD_LIBRARY_PATH")
@@ -146,6 +119,8 @@ def ray_cluster_config() -> RayClusterConfigFactory:
         min_workers: int = 0,
         max_workers: int | None = None,
         license: PolarsLicenseConfig | None = None,
+        scheduler_client_port: int | None = None,
+        worker_task_port: int | None = None,
     ) -> PolarsRayClusterConfig:
         cluster_id = f"polars-nanook-{uuid.uuid4().hex[:8]}"
 
@@ -156,7 +131,6 @@ def ray_cluster_config() -> RayClusterConfigFactory:
         return PolarsRayClusterConfig(
             # cluster configuration
             binary_path=os.environ.get("BINARY_PATH"),
-            single_host_cluster=True,
             worker_max_restarts=worker_max_restarts,
             # native binary configuration
             cluster_id=cluster_id,
@@ -172,7 +146,7 @@ def ray_cluster_config() -> RayClusterConfigFactory:
                 memory_hint=1,
                 # native binary configuration
                 cpu_reserved=1,
-                client_port=_free_port(),
+                client_port=scheduler_client_port or _free_port(),
                 worker_registration_port=_free_port(),
                 observatory=PolarsObservatoryConfig(enabled=False),
                 scaling=PolarsScalingConfig(
@@ -186,8 +160,7 @@ def ray_cluster_config() -> RayClusterConfigFactory:
                 memory_hint=1,
                 # native binary configuration
                 cpu_reserved=1,
-                task_port=_free_port_range(),
-                shuffle_port=_free_port_range(),
+                task_port=worker_task_port,
             ),
             monitoring=PolarsMonitoringConfig(enabled=False),
         )

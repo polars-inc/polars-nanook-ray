@@ -1,6 +1,5 @@
 import os
 import pathlib
-import socket
 import typing
 
 import toml
@@ -12,15 +11,6 @@ SCALER_HOST = "127.0.0.1"
 
 def _resolve_absolute_path(path: str) -> pathlib.Path:
     return pathlib.Path(os.path.normpath(pathlib.Path(path).expanduser().absolute()))
-
-
-def _port_available(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind((host, port))
-        except OSError:
-            return False
-        return True
 
 
 class AbsLocationConfig(BaseModel):
@@ -650,16 +640,18 @@ class PolarsWorkerConfig(BaseModel):
         ),
     )
 
-    task_port: int = Field(
-        default=5052,
+    task_port: int | None = Field(
+        default=None,
         description=(
-            "Port for the worker's task dispatch service (scheduler => worker)."
+            "Port for the worker's task dispatch service (scheduler => worker). If "
+            "unset, each worker picks a free port on its node."
         ),
     )
-    shuffle_port: int = Field(
-        default=5053,
+    shuffle_port: int | None = Field(
+        default=None,
         description=(
-            "Port for the worker's shuffle data transfer service (worker <=> worker)."
+            "Port for the worker's shuffle data transfer service (worker <=> worker). "
+            "If unset, each worker picks a free port on its node."
         ),
     )
     heartbeat_period_secs: int = Field(
@@ -730,13 +722,6 @@ class PolarsRayClusterConfig(BaseModel):
         description=(
             "Path to the binary, on the host. If unset, runs the "
             "`polars-nanook-compute` package installed alongside this one."
-        ),
-    )
-    single_host_cluster: bool = Field(
-        default=False,
-        description=(
-            "Offset each worker's ports by worker_id so multiple workers can run on "
-            "the same host without port collisions."
         ),
     )
 
@@ -827,10 +812,7 @@ class PolarsRayClusterConfig(BaseModel):
     def _no_runtime(cls, data: typing.Any) -> typing.Any:
         """Raise on the removed `runtime`, rather than ignore its binary path."""
         if isinstance(data, dict) and "runtime" in data:
-            msg = (
-                "`runtime` was removed; set `binary_path` and `single_host_cluster` "
-                "on the cluster config instead."
-            )
+            msg = "`runtime` was removed; set `binary_path` on the cluster config instead."
             raise ValueError(msg)
         return data
 
@@ -843,55 +825,18 @@ class PolarsRayClusterConfig(BaseModel):
             )
         return self
 
-    def _worker_port_offset(self, worker_id: int) -> int:
-        """Per-worker port offset to avoid collisions when co-located on one host."""
-        return worker_id * 2 if self.single_host_cluster else 0
+    def config_bind_ports_scheduler(self) -> dict[str, int | None]:
+        """Return the ports the scheduler binds, by name."""
+        ports: dict[str, int | None] = {
+            "client_port": self.scheduler.client_port,
+            "worker_registration_port": self.scheduler.worker_registration_port,
+        }
 
-    def _port_availability(
-        self,
-        *,
-        check_scheduler: bool,
-        check_workers: typing.Collection[int],
-        check_scaler: bool,
-    ) -> None:
-        """Raise if needed ports are already taken (only meaningful on single-host)."""
-        if not self.single_host_cluster:
-            return
+        if self.scheduler.observatory.enabled:
+            ports["observatory.otlp_port"] = self.scheduler.observatory.otlp_port
+            ports["observatory.rest_port"] = self.scheduler.observatory.rest_port
 
-        ports: dict[str, int] = {}
-
-        if check_scheduler:
-            ports["scheduler.client_port"] = self.scheduler.client_port
-            ports["scheduler.worker_registration_port"] = (
-                self.scheduler.worker_registration_port
-            )
-            if self.scheduler.observatory.enabled:
-                ports["scheduler.observatory.otlp_port"] = (
-                    self.scheduler.observatory.otlp_port
-                )
-                ports["scheduler.observatory.rest_port"] = (
-                    self.scheduler.observatory.rest_port
-                )
-
-        for worker_id in check_workers:
-            offset = self._worker_port_offset(worker_id)
-            ports[f"worker-{worker_id}.task_port"] = self.worker.task_port + offset
-            ports[f"worker-{worker_id}.shuffle_port"] = (
-                self.worker.shuffle_port + offset
-            )
-
-        if check_scaler and self.scheduler.scaling.enabled:
-            ports["scheduler.scaling.port"] = self.scheduler.scaling.port
-
-        taken = [
-            f"{name} ({port})"
-            for name, port in ports.items()
-            if not _port_available("127.0.0.1", port)
-        ]
-
-        if taken:
-            msg = f"Port(s) already in use, aborting: {', '.join(taken)}"
-            raise RuntimeError(msg)
+        return ports
 
     def config_scheduler(self, scheduler_host: str) -> str:
         """Render the TOML configuration of the scheduler node."""
@@ -927,12 +872,11 @@ class PolarsRayClusterConfig(BaseModel):
         worker_id: int,
         worker_host: str,
         scheduler_host: str,
+        *,
+        task_port: int,
+        shuffle_port: int,
     ) -> str:
-        """Render the TOML configuration of worker nodes."""
-        offset = self._worker_port_offset(worker_id)
-        task_port = self.worker.task_port + offset
-        shuffle_port = self.worker.shuffle_port + offset
-
+        """Render the TOML configuration of a worker, binding the ports given."""
         doc: dict = {
             "instance_id": f"worker-{worker_id}",
             "cluster_id": self.cluster_id,
