@@ -21,6 +21,7 @@ class RayClusterContext(PolarsRayCluster, ClusterContext):
 
     config = PolarsRayClusterConfig(
         num_workers=4,
+        # workers_per_node=4,
         license=PolarsServiceAccountLicenseConfig(
             workspace_id="<WORKSPACE_ID>",
             client_id="<SERVICE_ACCOUNT_ID>",

@@ -777,6 +777,15 @@ class PolarsRayClusterConfig(BaseModel):
         default=0,
         description="Number of Polars worker replicas to start.",
     )
+    workers_per_node: int = Field(
+        default=1,
+        ge=1,
+        description=(
+            "Maximum number of workers on one Ray node. Workers are pinned to nodes "
+            "with CPUs, spread across them first; raise this to run several workers "
+            "on one host, each on its own free ports."
+        ),
+    )
     min_workers: int = Field(
         default=0,
         description=(

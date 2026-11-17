@@ -137,6 +137,8 @@ def ray_cluster_config() -> RayClusterConfigFactory:
             num_workers=num_workers,
             min_workers=min_workers,
             max_workers=max_workers,
+            # one host, several workers
+            workers_per_node=10,
             license=(
                 license or PolarsEnterpriseLicenseConfig(license_path=license_path)
             ),

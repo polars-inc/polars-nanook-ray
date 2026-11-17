@@ -1,10 +1,11 @@
 import logging
 import os
-import re
 import typing
 
 import ray
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+from polars_nanook_ray.actors.placement import WorkerSlot
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -19,18 +20,10 @@ from polars_nanook_ray.subprocess_runner import SubprocessRunner
 if typing.TYPE_CHECKING:
     import pathlib
 
+    from ray.actor import ActorHandle
 
-WORKER_NAME_PREFIX = "worker"
 
 logger = logging.getLogger(__name__)
-
-
-def resolve_worker_name(worker_id: int) -> str:
-    return f"{WORKER_NAME_PREFIX}-{worker_id}"
-
-
-def _resolve_worker_name_regex() -> re.Pattern:
-    return re.compile(rf"^{WORKER_NAME_PREFIX}-(\d+)$")
 
 
 @ray.remote
@@ -40,13 +33,13 @@ class PolarsWorkerActor:
     def __init__(
         self,
         config: PolarsRayClusterConfig,
-        worker_id: int,
+        slot: WorkerSlot,
         scheduler_host: str,
     ) -> None:
         self.config_cluster: PolarsRayClusterConfig = config
 
-        self.worker_id = worker_id
-        self.worker_name: str = resolve_worker_name(worker_id)
+        self.slot = slot
+        self.worker_name: str = slot.name
         self.scheduler_host = scheduler_host
 
         self._config_path: pathlib.Path = _resolve_config_path(self.worker_name)
@@ -125,3 +118,25 @@ class PolarsWorkerActor:
     def get_worker_pid(self) -> int | None:
         """Return the OS process ID of the worker binary subprocess."""
         return self._runner.pid()
+
+
+def start_worker(
+    config: PolarsRayClusterConfig,
+    slot: WorkerSlot,
+    scheduler_host: str,
+) -> "ActorHandle":
+    """Start the worker of `slot` on its node, or return it if it already runs."""
+    actor = PolarsWorkerActor.options(  # type: ignore[attr-defined]
+        name=slot.name,
+        namespace=config.cluster_id,
+        get_if_exists=True,
+        lifetime="detached",
+        max_restarts=config.worker_max_restarts,
+        num_cpus=config.worker.cpus_hint,
+        memory=config.worker.memory_hint,
+        scheduling_strategy=NodeAffinitySchedulingStrategy(slot.node_id, soft=False),
+    ).remote(config, slot, scheduler_host)
+
+    logger.info("Requested worker %s", slot.name)
+
+    return actor

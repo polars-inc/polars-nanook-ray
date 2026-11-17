@@ -8,6 +8,7 @@ import sys
 import sysconfig
 
 import psutil
+import ray
 import toml
 
 from polars_nanook_ray.engine_instance_id import EngineInstanceId
@@ -81,7 +82,7 @@ class SubprocessRunner:
     @functools.cached_property
     def host(self) -> str:
         """Return the address the scheduler and workers reach the binary on."""
-        return socket.gethostbyname(socket.gethostname())
+        return ray.util.get_node_ip_address()
 
     def start(self, config_path: pathlib.Path, env: dict[str, str]) -> None:
         """Launch the service of the config given, without waiting for it."""

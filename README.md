@@ -71,6 +71,7 @@ from polars_nanook_ray.config import (
 
 config = PolarsRayClusterConfig(
     num_workers=4,
+    workers_per_node=4,  # all on this one host
     license=PolarsServiceAccountLicenseConfig(
         workspace_id="<WORKSPACE_ID>",
         client_id="<SERVICE_ACCOUNT_ID>",
@@ -113,6 +114,7 @@ from polars_nanook_ray.context import RayClusterContext
 
 config = PolarsRayClusterConfig(
     num_workers=4,
+    workers_per_node=4,  # all on this one host
     license=PolarsServiceAccountLicenseConfig(
         workspace_id="<WORKSPACE_ID>",
         client_id="<SERVICE_ACCOUNT_ID>",
@@ -139,6 +141,24 @@ ray.shutdown()
 Each worker picks free ports on its node, so several workers can share a host.
 To fix them instead, for firewall rules, set `task_port` and `shuffle_port` on
 `PolarsWorkerConfig`; workers then need a node each.
+
+## Worker placement
+
+Workers are pinned to Ray nodes, at most `workers_per_node` (default `1`) per node,
+and no more than a node's CPUs and memory fit at `cpus_hint` / `memory_hint` each.
+They are spread across nodes before a second worker lands on any of them; nodes
+without CPUs, like a head started with `--num-cpus=0`, get none. Nodes are listed with `ray.nodes()`, so
+neither placement nor `stop()` needs the Ray dashboard.
+
+Each worker is named after its node and its index on it, e.g. `worker-1a2b3c4d5e6f-0`
+for the first worker on the node whose ID starts with `1a2b3c4d5e6f`. Starting a
+worker whose name is taken returns the running one, so repeated scale-ups and
+reconnects never add workers: `start()` only tops the pool up to `num_workers`.
+Asking for more workers than the nodes have room for starts as many as fit, with a
+warning; `start()` fails right away instead.
+
+To run several workers on one machine, raise `workers_per_node`. Each worker picks
+free ports unless `task_port` and `shuffle_port` are fixed.
 
 The actors are running in `detached` mode and survive past the script: one can
 reconnect with the same `ray.init()` and `cluster` gymnastics from another
