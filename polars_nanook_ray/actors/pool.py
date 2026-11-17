@@ -98,7 +98,7 @@ class WorkerPool:
             for worker_slot in free[:missing]:
                 self._workers.start(worker_slot)
             self._target = max(self._target, num_workers)
-            return self._workers.running()
+            return running | {s.worker_id for s in free[:missing]}
 
     def rescale(
         self,
@@ -121,7 +121,10 @@ class WorkerPool:
 
             if len(running) < num_workers:
                 self._start_up_to(num_workers, running, self._free_slots(running))
-            elif len(running) > num_workers:
+                return
+
+            self._shortfall = 0
+            if len(running) > num_workers:
                 remove = self._select_removal(running, num_workers, delete, keep)
                 self._workers.terminate(remove)
                 for worker in sorted(remove):
@@ -185,9 +188,11 @@ class WorkerPool:
                 self._workers.terminate(running)
 
     def status(self) -> PoolStatus:
-        """Return the running workers, and the target."""
-        with self._lock:
-            return PoolStatus(self._workers.running(), self._target)
+        """Return the running workers, and the target.
+
+        Does not wait for a rescale or refill in progress.
+        """
+        return PoolStatus(self._workers.running(), self._target)
 
     def _refill_until_halted(self, interval: float) -> None:
         while not self._halted.wait(interval):
@@ -264,18 +269,7 @@ class WorkerPool:
         capacities = {
             node.node_id: capacity
             for node in self._workers.nodes()
-            if node.alive
-            and node.cpus > 0
-            and (
-                capacity := int(
-                    min(
-                        self._config.workers_per_node,
-                        _fits(node.cpus, self._config.worker.cpus_hint),
-                        _fits(node.memory, self._config.worker.memory_hint),
-                    )
-                )
-            )
-            > 0
+            if (capacity := self._capacity(node)) > 0
         }
         return [
             WorkerSlot(node_id, index)
@@ -283,6 +277,18 @@ class WorkerPool:
             for node_id in sorted(capacities)
             if index < capacities[node_id]
         ]
+
+    def _capacity(self, node: Node) -> int:
+        """Return how many workers `node` has room for."""
+        if not node.alive or node.cpus <= 0:
+            return 0
+        return int(
+            min(
+                self._config.workers_per_node,
+                _fits(node.cpus, self._config.worker.cpus_hint),
+                _fits(node.memory, self._config.worker.memory_hint),
+            )
+        )
 
     def _free_slots(self, running: typing.Collection[WorkerId]) -> list[WorkerSlot]:
         return [s for s in self._slots() if s.worker_id not in running]

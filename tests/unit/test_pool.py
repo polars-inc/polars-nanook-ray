@@ -443,3 +443,49 @@ def test_stop_removes_every_worker_for_good() -> None:
 
     assert workers.running() == set()
     assert worker_pool.status().target == 0
+
+
+class SlowListing(InMemoryWorkers):
+    """Workers that are listed only once they are up, unlike Ray's named actors."""
+
+    def start(self, slot: WorkerSlot) -> None:
+        pass
+
+
+def test_ensure_returns_the_workers_it_started_before_they_are_listed() -> None:
+    workers = SlowListing(node(NODE_A), node(NODE_B))
+    workers.workers[slot(NODE_A)] = NODE_A
+
+    assert pool(workers).ensure(2) == {slot(NODE_A), slot(NODE_B)}
+
+
+def test_ensure_raises_a_lower_target() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, target=0)
+
+    worker_pool.ensure(2)
+
+    assert worker_pool.status().target == 2
+
+
+def test_ensure_without_room_leaves_the_target() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers, target=1)
+
+    with pytest.raises(NoRoomForWorkers):
+        worker_pool.ensure(2)
+
+    assert worker_pool.status().target == 1
+
+
+def test_a_shortfall_that_comes_back_after_a_downscale_is_reported_again(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers)
+
+    worker_pool.rescale(2)
+    worker_pool.rescale(1)
+    worker_pool.rescale(2)
+
+    assert caplog.text.count("Only room for") == 2
