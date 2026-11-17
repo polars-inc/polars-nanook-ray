@@ -1,30 +1,24 @@
 import logging
 import time
 import typing
+import urllib.parse
 
 import ray
-from ray.exceptions import (
-    ActorDiedError,
-    ActorUnavailableError,
-    GetTimeoutError,
-    RayError,
-)
+from ray.exceptions import ActorDiedError, ActorUnavailableError, GetTimeoutError
 
 from polars_nanook_ray.actors import (
+    Endpoints,
     NoRoomForWorkers,
     PolarsScalerActor,
     PolarsSchedulerActor,
     RayWorkers,
-    resolve_actor_handles,
+    WorkerExited,
     resolve_scaler_name,
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import placement_options
 from polars_nanook_ray.config import PolarsRayClusterConfig
 from polars_nanook_ray.identity import SCHEDULER
-
-if typing.TYPE_CHECKING:
-    from polars_nanook_ray.identity import WorkerId
 
 logger = logging.getLogger(__name__)
 
@@ -80,14 +74,31 @@ class PolarsRayCluster:
 
         self._scaler_actor: typing.Any = None
         self._scheduler_actor: typing.Any = None
-        self._worker_actors: dict[WorkerId, typing.Any] = {}
 
-    def _actor_exists(self, name: str) -> bool:
+    def _find_actor(self, name: str) -> typing.Any:
         try:
-            ray.get_actor(name, namespace=self.config.cluster_id)
+            return ray.get_actor(name, namespace=self.config.cluster_id)
         except ValueError:
-            return False
-        return True
+            return None
+
+    def _find_or_create_actor(
+        self,
+        name: str,
+        actor_class: typing.Any,
+        options: typing.Callable[[], dict[str, typing.Any]],
+    ) -> typing.Any:
+        """Return the actor `name`, creating it with the placement `options` if none."""
+        if (actor := self._find_actor(name)) is not None:
+            logger.info("Reconnected to existing %s actor", name)
+            return actor
+
+        return actor_class.options(
+            name=name,
+            namespace=self.config.cluster_id,
+            lifetime="detached",
+            max_restarts=self.config.scheduler_max_restarts,
+            **options(),
+        ).remote(self.config)
 
     def _scheduler_options(self) -> dict[str, typing.Any]:
         return placement_options(
@@ -98,154 +109,44 @@ class PolarsRayCluster:
             single_node=self.config.scheduler.scaling.enabled,
         )
 
-    def _start_scheduler(self) -> None:
-        try:
-            self._scheduler_actor = ray.get_actor(
-                SCHEDULER.actor_name,
-                namespace=self.config.cluster_id,
-            )
-        except ValueError:
-            pass
-        else:
-            logger.info("Reconnected to existing scheduler actor")
-            return
-
-        self._scheduler_actor = PolarsSchedulerActor.options(  # type: ignore[attr-defined]
-            name=SCHEDULER.actor_name,
-            namespace=self.config.cluster_id,
-            lifetime="detached",
-            max_restarts=self.config.scheduler_max_restarts,
-            **self._scheduler_options(),
-        ).remote(self.config)
-
-    def _ensure_workers(self) -> None:
-        names = ray.get(
-            self._scheduler_actor.ensure_workers.remote(self.config.num_workers),
-            timeout=self.config.actor_response_timeout,
-        )
-        self._worker_actors = resolve_actor_handles(names, self.config.cluster_id)
-
-    def _start_scaler(self) -> None:
-        actor_name = resolve_scaler_name()
-
-        try:
-            self._scaler_actor = ray.get_actor(
-                actor_name,
-                namespace=self.config.cluster_id,
-            )
-        except ValueError:
-            pass
-        else:
-            logger.info("Reconnected to existing scaler actor")
-            return
-
-        self._scaler_actor = PolarsScalerActor.options(  # type: ignore[attr-defined]
-            name=actor_name,
-            namespace=self.config.cluster_id,
-            lifetime="detached",
-            max_restarts=self.config.scheduler_max_restarts,
-            **placement_options(  # same node as the scheduler
-                "scaler",
-                resource=self.config.scheduler.placement_resource,
-                num_cpus=0,
-                single_node=True,
-            ),
-        ).remote(self.config)
-
-    def _wait_for_scheduler(self) -> None:
-        logger.info(
-            "Waiting up to %ds for the scheduler",
-            self.config.startup_timeout,
+    def _scaler_options(self) -> dict[str, typing.Any]:
+        return placement_options(  # same node as the scheduler
+            "scaler",
+            resource=self.config.scheduler.placement_resource,
+            num_cpus=0,
+            single_node=True,
         )
 
-        deadline = time.monotonic() + self.config.startup_timeout
+    def _wait_until_ready(self, actor: typing.Any, name: str) -> None:
+        """Wait until `actor` has nothing left starting: itself, or what it runs."""
+        timeout = self.config.startup_timeout
+        logger.info("Waiting up to %ds for the %s", timeout, name)
+
+        not_ready = [name]
+        deadline = time.monotonic() + timeout
         while (remaining := deadline - time.monotonic()) > 0:
             try:
-                if ray.get(self._scheduler_actor.is_ready.remote(), timeout=remaining):
-                    logger.info("Scheduler started and listening")
-                    return
+                not_ready = ray.get(actor.not_ready.remote(), timeout=remaining)
             except GetTimeoutError:
                 break
             except ActorUnavailableError:  # Ray is restarting it: not ready yet
-                time.sleep(0.5)
-                continue
+                pass
             except ActorDiedError as exc:
                 msg = (
-                    "The scheduler exited while starting, past its restart limit; "
-                    "see the scheduler actor's log for the engine's error"
-                    f"\n{exc}"
+                    f"The {name} exited while starting, past its restart limit; see "
+                    f"the {name} actor's log for the error\n{exc}"
                 )
                 raise RuntimeError(msg) from exc
-            time.sleep(0.5)
-
-        msg = f"Scheduler did not start within {self.config.startup_timeout}s"
-        raise RuntimeError(msg)
-
-    def _wait_for_workers(self) -> None:
-        logger.info(
-            "Waiting up to %ds for %d workers",
-            self.config.startup_timeout,
-            len(self._worker_actors),
-        )
-
-        pending = dict(self._worker_actors)
-
-        deadline = time.monotonic() + self.config.startup_timeout
-        while pending and (remaining := deadline - time.monotonic()) > 0:
-            try:
-                readiness = ray.get(
-                    [actor.is_ready.remote() for actor in pending.values()],
-                    timeout=remaining,
-                )
-            except GetTimeoutError:
-                break
-            except ActorUnavailableError:  # Ray is restarting it: not ready yet
-                time.sleep(0.5)
-                continue
-            except ActorDiedError as exc:
-                msg = (
-                    "A worker exited while starting, past its restart limit; see the "
-                    "worker actors' logs for the engine's error"
-                    f"\n{exc}"
-                )
-                raise RuntimeError(msg) from exc
-
-            for name, worker_ready in zip(
-                list(pending.keys()),
-                readiness,
-                strict=True,
-            ):
-                if worker_ready:
-                    logger.info("Worker %s is ready", name)
-                    pending.pop(name)
-
-            if pending:
-                time.sleep(0.5)
-
-        if pending:
-            msg = (
-                f"Workers {sorted(pending)} "
-                f"did not start within {self.config.startup_timeout}s"
-            )
-            raise RuntimeError(msg)
-
-    def _wait_for_scaler(self) -> None:
-        logger.info(
-            "Waiting up to %ds for the scaler",
-            self.config.startup_timeout,
-        )
-
-        deadline = time.monotonic() + self.config.startup_timeout
-        while (remaining := deadline - time.monotonic()) > 0:
-            try:
-                if ray.get(self._scaler_actor.is_ready.remote(), timeout=remaining):
-                    logger.info("Scaler actor started and listening")
+            except WorkerExited as exc:
+                # Ray raises a subclass of the actor's error, with the actor's traceback
+                raise exc.cause from None  # type: ignore[attr-defined]
+            else:
+                if not not_ready:
+                    logger.info("The %s is ready", name)
                     return
-            except GetTimeoutError:
-                break
             time.sleep(0.5)
 
-        msg = f"Scaler did not start within {self.config.startup_timeout}s"
+        msg = f"Did not start within {timeout}s: {', '.join(not_ready)}"
         raise RuntimeError(msg)
 
     # this should probably never be called directly
@@ -273,53 +174,43 @@ class PolarsRayCluster:
         already running, so reconnecting never adds workers. Fails right away if the
         nodes have no room for `num_workers`, removing the actors it started.
         """
-        created = not self._actor_exists(SCHEDULER.actor_name)
+        created = self._find_actor(SCHEDULER.actor_name) is None
         if created:
             self._scheduler_options()  # fail before the scaler is created
 
         if self.config.scheduler.scaling.enabled:
-            self._start_scaler()
-            self._wait_for_scaler()
+            self._scaler_actor = self._find_or_create_actor(
+                resolve_scaler_name(), PolarsScalerActor, self._scaler_options
+            )
+            self._wait_until_ready(self._scaler_actor, "scaler")
 
-        self._start_scheduler()
+        self._scheduler_actor = self._find_or_create_actor(
+            SCHEDULER.actor_name, PolarsSchedulerActor, self._scheduler_options
+        )
         try:
-            self._ensure_workers()
+            workers = ray.get(
+                self._scheduler_actor.ensure_workers.remote(self.config.num_workers),
+                timeout=self.config.actor_response_timeout,
+            )
         except NoRoomForWorkers as exc:
             if created:
                 self.stop()
             # Ray raises a subclass of the actor's error, with the actor's traceback
             raise exc.cause from None  # type: ignore[attr-defined]
 
-        self._wait_for_scheduler()
-        self._wait_for_workers()
+        self._wait_until_ready(self._scheduler_actor, "scheduler")
 
-        msg = (
-            f"Engine cluster ready: scheduler at {self.get_client_addr()}, "
-            f"{len(self._worker_actors)} workers."
-        )
-        if self.config.scheduler.observatory.enabled:
-            msg += f" Dashboard available at {self.get_dashboard_addr()}."
+        endpoints = self._endpoints()
+        msg = f"Engine cluster ready: scheduler at {endpoints.client}, "
+        msg += f"{len(workers)} workers."
+        if endpoints.dashboard is not None:
+            msg += f" Dashboard available at {endpoints.dashboard}."
         logger.info(msg)
 
     def stop(self) -> None:
         """Terminate all the actors (scaler, workers, scheduler)."""
-        try:
-            self._scheduler_actor = ray.get_actor(
-                SCHEDULER.actor_name,
-                namespace=self.config.cluster_id,
-            )
-        except ValueError:
-            self._scheduler_actor = None
-
         if self.config.scheduler.scaling.enabled:
-            try:
-                self._scaler_actor = ray.get_actor(
-                    resolve_scaler_name(),
-                    namespace=self.config.cluster_id,
-                )
-            except ValueError:
-                self._scaler_actor = None
-
+            self._scaler_actor = self._find_actor(resolve_scaler_name())
             if self._scaler_actor is not None:
                 logger.info("Stopping scaler...")
                 terminate_actors(
@@ -328,61 +219,36 @@ class PolarsRayCluster:
                 )
                 self._scaler_actor = None
 
-        self._stop_workers()
-        self._worker_actors = {}
-
+        self._scheduler_actor = self._find_actor(SCHEDULER.actor_name)
         if self._scheduler_actor is not None:
-            logger.info("Stopping scheduler...")
+            logger.info("Stopping workers and scheduler...")
             terminate_actors(
                 [self._scheduler_actor],
                 self.config.actor_response_timeout,
             )
             self._scheduler_actor = None
 
-        logger.info("Cluster stopped")
-
-    def _stop_workers(self) -> None:
-        if self._scheduler_actor is not None:
-            try:
-                ray.get(
-                    self._scheduler_actor.stop_workers.remote(),
-                    # it stops the workers with the same timeout
-                    timeout=2 * self.config.actor_response_timeout,
-                )
-            except RayError:
-                logger.exception("The scheduler could not stop the workers")
-            else:
-                return
-
-        # no scheduler to stop them: stop any worker left behind from here
+        # any worker left behind by a scheduler that is gone or failed to stop it
         workers = RayWorkers(self.config)
         workers.terminate(workers.running())
 
-    def get_client_addr(self) -> str:
-        """Return the URI queries should be submitted to."""
+        logger.info("Cluster stopped")
+
+    def _endpoints(self) -> Endpoints:
         if self._scheduler_actor is None:
             msg = "The scheduler does not appear to be running."
             raise RuntimeError(msg)
 
-        return str(
-            ray.get(
-                self._scheduler_actor.get_client_addr.remote(),
-                timeout=self.config.actor_response_timeout,
-            )
+        return ray.get(  # type: ignore[no-any-return]
+            self._scheduler_actor.endpoints.remote(),
+            timeout=self.config.actor_response_timeout,
         )
+
+    def get_client_addr(self) -> str:
+        """Return the `host:port` queries should be submitted to."""
+        return urllib.parse.urlsplit(self._endpoints().client).netloc
 
     def get_dashboard_addr(self) -> str:
         """Return the observatory dashboard URL."""
-        if self._scheduler_actor is None:
-            msg = "The scheduler does not appear to be running."
-            raise RuntimeError(msg)
-
-        if not self.config.scheduler.observatory.enabled:
-            return "The observatory is not enabled on this cluster"
-
-        return str(
-            ray.get(
-                self._scheduler_actor.get_dashboard_addr.remote(),
-                timeout=self.config.actor_response_timeout,
-            )
-        )
+        dashboard = self._endpoints().dashboard
+        return dashboard or "The observatory is not enabled on this cluster"

@@ -24,6 +24,13 @@ if typing.TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class Endpoints(typing.NamedTuple):
+    """The scheduler's URLs: for queries, and for the observatory dashboard, if on."""
+
+    client: str
+    dashboard: str | None
+
+
 @ray.remote
 class PolarsSchedulerActor:
     """The central service, distributing tasks and piloting autoscaling."""
@@ -40,11 +47,11 @@ class PolarsSchedulerActor:
         )
 
         self.start()
-        _handle_sigterm(self.stop)
+        _handle_sigterm(self._stop_scheduler)
         self._pool.start_refilling()
 
     def __ray_shutdown__(self) -> None:
-        self.stop()
+        self._stop_scheduler()
 
     def start(self) -> None:
         """Spawn the scheduler process, if not already running."""
@@ -74,6 +81,11 @@ class PolarsSchedulerActor:
         self._runner.start(self._config_path, env)
 
     def stop(self) -> None:
+        """Stop the workers, then the scheduler process."""
+        self._pool.stop()
+        self._stop_scheduler()
+
+    def _stop_scheduler(self) -> None:
         """Terminate the scheduler process and clean up, leaving the workers."""
         self._pool.halt()
         self._runner.stop()
@@ -88,24 +100,29 @@ class PolarsSchedulerActor:
             self.config_cluster.scheduler.worker_registration_port
         )
 
+    def not_ready(self) -> list[str]:
+        """Return the scheduler if it is not ready, else the workers not ready yet.
+
+        Raises `WorkerExited` if a worker exited past its restart limit while starting.
+        """
+        if not self.is_ready():
+            return [str(SCHEDULER)]
+        return [str(worker) for worker in sorted(self._pool.not_ready())]
+
     def get_host(self) -> str:
         """Return the IP address the scheduler is running on."""
         return self.scheduler_host
 
-    def get_client_addr(self) -> str:
-        """Return the URI queries should be submitted to."""
-        host = self.scheduler_host
-        port = self.config_cluster.scheduler.client_port
-        return f"{host}:{port}"
-
-    def get_dashboard_addr(self) -> str | None:
-        """Return the observatory dashboard URL."""
-        host = self.scheduler_host
-        port = self.config_cluster.scheduler.observatory.rest_port
-        return (
-            f"http://{host}:{port}"
-            if self.config_cluster.scheduler.observatory.enabled
-            else None
+    def endpoints(self) -> Endpoints:
+        """Return the URLs to submit queries to and of the dashboard, if any."""
+        scheduler = self.config_cluster.scheduler
+        return Endpoints(
+            client=f"http://{self.scheduler_host}:{scheduler.client_port}",
+            dashboard=(
+                f"http://{self.scheduler_host}:{scheduler.observatory.rest_port}"
+                if scheduler.observatory.enabled
+                else None
+            ),
         )
 
     def get_scheduler_pid(self) -> int | None:
@@ -153,7 +170,3 @@ class PolarsSchedulerActor:
 
         """
         self._pool.rescale(num_workers, delete=delete, keep=keep)
-
-    def stop_workers(self) -> None:
-        """Stop refilling the worker pool, then terminate every worker."""
-        self._pool.stop()

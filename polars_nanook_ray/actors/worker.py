@@ -3,9 +3,10 @@ import os
 import typing
 
 import ray
+from ray.exceptions import ActorDiedError, ActorUnavailableError
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from polars_nanook_ray.actors.pool import Node, WorkerSlot
+from polars_nanook_ray.actors.pool import Node, WorkerExited, WorkerSlot
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -26,6 +27,9 @@ if typing.TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# a worker still starting answers once it is constructed
+READY_CHECK_TIMEOUT = 2.0
 
 
 @ray.remote
@@ -169,3 +173,35 @@ class RayWorkers:
         terminate_actors(list(actors.values()), self._config.actor_response_timeout)
         for worker in workers:
             self._started.pop(worker, None)
+
+    def ready(self, workers: typing.Collection[WorkerId]) -> set[WorkerId]:
+        handles = {w: h for w in workers if (h := self._started.get(w)) is not None}
+        handles |= resolve_actor_handles(
+            set(workers) - set(handles), self._config.cluster_id
+        )
+        if not handles:
+            return set()
+
+        checks: dict[WorkerId, ray.ObjectRef[bool]] = {
+            worker: handle.is_ready.remote() for worker, handle in handles.items()
+        }
+        answered, _ = ray.wait(
+            list(checks.values()), num_returns=len(checks), timeout=READY_CHECK_TIMEOUT
+        )
+
+        ready: set[WorkerId] = set()
+        for worker, check in checks.items():
+            if check not in answered:
+                continue
+            try:
+                if ray.get(check):
+                    ready.add(worker)
+            except ActorUnavailableError:  # Ray is restarting it: not ready yet
+                continue
+            except ActorDiedError as exc:
+                msg = (
+                    f"{worker} exited while starting, past its restart limit; see its "
+                    f"actor's log for the engine's error\n{exc}"
+                )
+                raise WorkerExited(msg) from exc
+        return ready

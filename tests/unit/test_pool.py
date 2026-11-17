@@ -9,6 +9,7 @@ from polars_nanook_ray.actors.pool import (
     MAX_REFILL_BACKOFF,
     Node,
     NoRoomForWorkers,
+    WorkerExited,
     WorkerPool,
     WorkerSlot,
 )
@@ -35,6 +36,8 @@ class InMemoryWorkers:
     def __init__(self, *nodes: Node) -> None:
         self.nodes_by_id = {node.node_id: node for node in nodes}
         self.workers: dict[WorkerId, str] = {}  # worker -> node ID
+        self.listening: set[WorkerId] = set()
+        self.exited: set[WorkerId] = set()  # past their restart limit
 
     def nodes(self) -> list[Node]:
         return list(self.nodes_by_id.values())
@@ -49,6 +52,12 @@ class InMemoryWorkers:
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
         for worker in workers:
             self.workers.pop(worker, None)
+
+    def ready(self, workers: typing.Collection[WorkerId]) -> set[WorkerId]:
+        if exited := sorted(self.exited.intersection(workers)):
+            msg = f"{exited[0]} exited while starting"
+            raise WorkerExited(msg)
+        return self.listening.intersection(workers)
 
     def kill(self, worker: WorkerId) -> None:
         del self.workers[worker]
@@ -489,3 +498,61 @@ def test_a_shortfall_that_comes_back_after_a_downscale_is_reported_again(
     worker_pool.rescale(2)
 
     assert caplog.text.count("Only room for") == 2
+
+
+def test_not_ready_names_the_workers_not_listening_yet() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers)
+    worker_pool.ensure(2)
+
+    workers.listening.add(slot(NODE_A))
+    assert worker_pool.not_ready() == {slot(NODE_B)}
+
+    workers.listening.add(slot(NODE_B))
+    assert worker_pool.not_ready() == set()
+
+
+def test_not_ready_awaits_the_workers_started_before_they_are_listed() -> None:
+    workers = SlowListing(node(NODE_A), node(NODE_B))
+    workers.workers[slot(NODE_A)] = NODE_A
+    workers.listening.add(slot(NODE_A))
+    worker_pool = pool(workers)
+
+    worker_pool.ensure(2)
+
+    assert worker_pool.not_ready() == {slot(NODE_B)}
+
+
+def test_not_ready_raises_when_a_started_worker_exited() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+
+    workers.kill(slot(NODE_A))
+    workers.exited.add(slot(NODE_A))
+
+    with pytest.raises(WorkerExited, match=str(slot(NODE_A))):
+        worker_pool.not_ready()
+
+
+def test_not_ready_leaves_a_worker_seen_ready_to_the_refill() -> None:
+    workers = InMemoryWorkers(node(NODE_A))
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+    workers.listening.add(slot(NODE_A))
+    worker_pool.not_ready()
+
+    workers.kill(slot(NODE_A))
+    workers.exited.add(slot(NODE_A))
+
+    assert worker_pool.not_ready() == set()
+
+
+def test_not_ready_forgets_the_workers_stopped() -> None:
+    workers = SlowListing(node(NODE_A))
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+
+    worker_pool.stop()
+
+    assert worker_pool.not_ready() == set()

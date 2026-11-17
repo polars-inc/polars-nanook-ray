@@ -50,12 +50,13 @@ class RayClusterContext(PolarsRayCluster, ClusterContext):
         """Start (or reconnect to) the Ray actors, then bootstrap the client."""
         super().start()
 
+        endpoints = self._endpoints()
         bootstrap = ClusterContext(
-            uri=f"http://{self.get_client_addr()}",
+            uri=endpoints.client,
             observatory=(
-                ClientOptions(uri=self.get_dashboard_addr())
-                if self.config.scheduler.observatory.enabled
-                else None
+                None
+                if endpoints.dashboard is None
+                else ClientOptions(uri=endpoints.dashboard)
             ),
         )
 

@@ -51,8 +51,19 @@ class Workers(typing.Protocol):
         """Stop the workers given, ignoring those that are not running."""
         ...
 
+    def ready(self, workers: typing.Collection[WorkerId]) -> set[WorkerId]:
+        """Return those of `workers` listening for tasks.
+
+        Raises `WorkerExited` if one of them exited past its restart limit.
+        """
+        ...
+
 
 class NoRoomForWorkers(RuntimeError):
+    pass
+
+
+class WorkerExited(RuntimeError):
     pass
 
 
@@ -82,6 +93,8 @@ class WorkerPool:
         # slot -> (refills in a row, earliest time to refill it again)
         self._backoff: dict[WorkerId, tuple[int, float]] = {}
         self._halted = threading.Event()
+        # started by the last `ensure`, and not seen ready since
+        self._starting: set[WorkerId] = set()
 
     def ensure(self, num_workers: int) -> set[WorkerId]:
         """Start workers until there are at least `num_workers`; return them all."""
@@ -98,7 +111,22 @@ class WorkerPool:
             for worker_slot in free[:missing]:
                 self._workers.start(worker_slot)
             self._target = max(self._target, num_workers)
-            return running | {s.worker_id for s in free[:missing]}
+            self._starting = {s.worker_id for s in free[:missing]}
+            return running | self._starting
+
+    def not_ready(self) -> set[WorkerId]:
+        """Return the workers not listening for tasks yet.
+
+        Checks the running workers, and those the last `ensure` started that are not
+        listed yet. Raises `WorkerExited` if one of those exited past its restart
+        limit before it was ready.
+        """
+        with self._lock:
+            workers = self._workers.running() | self._starting
+        ready = self._workers.ready(workers)
+        with self._lock:
+            self._starting -= ready
+        return workers - ready
 
     def rescale(
         self,
@@ -127,6 +155,7 @@ class WorkerPool:
             if len(running) > num_workers:
                 remove = self._select_removal(running, num_workers, delete, keep)
                 self._workers.terminate(remove)
+                self._starting -= remove
                 for worker in sorted(remove):
                     logger.info("Removed worker %s", worker)
 
@@ -182,6 +211,7 @@ class WorkerPool:
         self.halt()
         with self._lock:
             self._target = 0
+            self._starting.clear()
             running = self._workers.running()
             if running:
                 logger.info("Stopping %d worker(s)...", len(running))

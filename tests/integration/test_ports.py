@@ -5,7 +5,7 @@ import psutil
 import pytest
 import ray
 
-from .conftest import RayClusterFactory, _free_port
+from .conftest import RayClusterFactory, _free_port, worker_actors
 
 
 def _listening_ports(pid: int) -> set[int]:
@@ -23,7 +23,7 @@ def test_workers_on_one_host_listen_on_distinct_ports(
 
     ports = [
         _listening_ports(ray.get(actor.get_worker_pid.remote()))
-        for actor in cluster._worker_actors.values()
+        for actor in worker_actors(cluster).values()
     ]
 
     assert all(ports)
@@ -34,7 +34,8 @@ def test_worker_listens_on_fixed_port(ray_cluster: RayClusterFactory) -> None:
     port = _free_port()
     cluster = ray_cluster(num_workers=1, worker_task_port=port)
 
-    pid = ray.get(next(iter(cluster._worker_actors.values())).get_worker_pid.remote())
+    (actor,) = worker_actors(cluster).values()
+    pid = ray.get(actor.get_worker_pid.remote())
 
     assert port in _listening_ports(pid)
 
