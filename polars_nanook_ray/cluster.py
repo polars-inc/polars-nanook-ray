@@ -4,7 +4,12 @@ import time
 import typing
 
 import ray
-from ray.exceptions import GetTimeoutError, RayError
+from ray.exceptions import (
+    ActorDiedError,
+    ActorUnavailableError,
+    GetTimeoutError,
+    RayError,
+)
 
 from polars_nanook_ray.actors import (
     PolarsScalerActor,
@@ -174,6 +179,16 @@ class PolarsRayCluster:
                     return
             except GetTimeoutError:
                 break
+            except ActorUnavailableError:  # Ray is restarting it: not ready yet
+                time.sleep(0.5)
+                continue
+            except ActorDiedError as exc:
+                msg = (
+                    "The scheduler exited while starting, past its restart limit; "
+                    "see the scheduler actor's log for the engine's error"
+                    f"\n{exc}"
+                )
+                raise RuntimeError(msg) from exc
             time.sleep(0.5)
 
         msg = f"Scheduler did not start within {self.config.startup_timeout}s"
@@ -197,6 +212,16 @@ class PolarsRayCluster:
                 )
             except GetTimeoutError:
                 break
+            except ActorUnavailableError:  # Ray is restarting it: not ready yet
+                time.sleep(0.5)
+                continue
+            except ActorDiedError as exc:
+                msg = (
+                    "A worker exited while starting, past its restart limit; see the "
+                    "worker actors' logs for the engine's error"
+                    f"\n{exc}"
+                )
+                raise RuntimeError(msg) from exc
 
             for name, worker_ready in zip(
                 list(pending.keys()),
