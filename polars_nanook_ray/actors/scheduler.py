@@ -58,8 +58,6 @@ class PolarsSchedulerActor:
         if self._runner.is_started():
             return
 
-        self._runner.stop_orphans(self.config_cluster.cluster_id)
-
         resolve_ports(self.config_cluster.config_bind_ports_scheduler())
 
         toml = self.config_cluster.config_scheduler(self.scheduler_host)

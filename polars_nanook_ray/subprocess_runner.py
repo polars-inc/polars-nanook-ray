@@ -1,8 +1,10 @@
+import ctypes
 import functools
 import logging
 import os
 import pathlib
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -10,11 +12,7 @@ import sysconfig
 import threading
 import typing
 
-import psutil
 import ray
-import toml
-
-from polars_nanook_ray.identity import identify
 
 if typing.TYPE_CHECKING:
     from polars_nanook_ray.identity import Identity
@@ -28,6 +26,31 @@ def _service_args(config_path: str | pathlib.Path) -> list[str]:
 
 
 COMPUTE_SCRIPT = "polars-nanook-compute"
+
+_PR_SET_PDEATHSIG = 1
+
+
+def _die_with_this_process() -> typing.Callable[[], None] | None:
+    """Return a `preexec_fn` that has the kernel stop the child when we die, on Linux.
+
+    Our handlers stop the binary when the actor is stopped, but not when the actor's
+    process is killed outright, e.g. by the out-of-memory killer. The kernel signals the
+    child when the thread that forked it exits; Ray's actor threads live as long as the
+    actor. The function only makes system calls, as the child of a threaded process
+    must not take locks before it execs.
+    """
+    if sys.platform != "linux":
+        return None
+
+    prctl = ctypes.CDLL(None, use_errno=True).prctl
+    parent = os.getpid()
+
+    def preexec() -> None:
+        prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+        if os.getppid() != parent:  # we died before the signal was set up
+            os._exit(1)
+
+    return preexec
 
 
 def _resolve_compute_script() -> str:
@@ -72,8 +95,7 @@ class SubprocessRunner:
     @functools.cached_property
     def command(self) -> list[str]:
         """Return the command line launching the binary, before its arguments."""
-        # the script, as workers re-run sys.argv[0] to spawn their executors; through
-        # sys.executable, for stop_orphans to match the command line it launched
+        # the script, as workers re-run sys.argv[0] to spawn their executors
         return (
             [sys.executable, _resolve_compute_script()]
             if self.binary_path is None
@@ -89,7 +111,9 @@ class SubprocessRunner:
         """Launch the service of the config given, without waiting for it."""
         self._stopping.clear()
         args = _service_args(config_path)
-        self._handle = subprocess.Popen([*self.command, *args], env=env)
+        self._handle = subprocess.Popen(
+            [*self.command, *args], env=env, preexec_fn=_die_with_this_process()
+        )
         logger.info("Process ID of %s: %d", self.identity, self._handle.pid)
         threading.Thread(
             target=self._exit_with_binary,
@@ -128,42 +152,6 @@ class SubprocessRunner:
                 self._handle.kill()
                 self._handle.wait()
         self._handle = None
-
-    def _is_instance_of(self, cmdline: list[str], cluster_id: str) -> bool:
-        """Return whether the command line runs this instance of the cluster given."""
-        command, args = cmdline[: len(self.command)], cmdline[len(self.command) :]
-        if command != self.command or not args or args != _service_args(args[-1]):
-            return False
-
-        try:
-            config = toml.loads(pathlib.Path(args[-1]).read_text())
-        except (OSError, ValueError):  # unreadable, not UTF-8 or not TOML
-            return False
-
-        return (
-            config.get("cluster_id") == cluster_id
-            and identify(config.get("instance_id")) == self.identity
-        )
-
-    def stop_orphans(self, cluster_id: str) -> None:
-        for process in psutil.process_iter():
-            try:
-                if not self._is_instance_of(process.cmdline(), cluster_id):
-                    continue
-
-                logger.warning(
-                    "Stopping orphan '%s' process (%d) left over from a previous crash",
-                    self.identity,
-                    process.pid,
-                )
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except psutil.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
-                continue
 
     def is_alive(self) -> bool:
         """Return whether the binary is running right now."""
