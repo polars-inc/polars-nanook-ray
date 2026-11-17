@@ -66,7 +66,6 @@ class PolarsSchedulerActor:
         self._runner = SubprocessRunner(
             config.binary_path,
             name,
-            config.instance_name(name),
         )
 
         self.scheduler_host: str = self._runner.host
