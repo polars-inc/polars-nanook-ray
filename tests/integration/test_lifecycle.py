@@ -66,7 +66,8 @@ def test_scheduler_exit_fails_fast(
     license = PolarsEnterpriseLicenseConfig(license_path=str(tmp_path / "missing.json"))
 
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match="scheduler exited with code"):
+    # the engine's exit takes its actor down, and Ray retries it up to its limit
+    with pytest.raises(RuntimeError, match="scheduler exited"):
         ray_cluster(num_workers=0, license=license)
 
     assert time.monotonic() - started < 15

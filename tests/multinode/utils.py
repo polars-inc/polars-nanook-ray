@@ -1,4 +1,5 @@
-import shutil
+import pathlib
+import tempfile
 import time
 import typing
 import uuid
@@ -34,12 +35,15 @@ def head_cluster() -> Cluster:
     return cluster
 
 
-def make_config(**kwargs: typing.Any) -> PolarsRayClusterConfig:
-    binary_path = shutil.which("true")
-    assert binary_path is not None
+_STUB_ENGINE = pathlib.Path(tempfile.gettempdir()) / "polars-nanook-ray-stub-engine"
+_STUB_ENGINE.write_text("#!/bin/sh\nexec sleep 3600\n")
+_STUB_ENGINE.chmod(0o755)
 
+
+def make_config(**kwargs: typing.Any) -> PolarsRayClusterConfig:
     return PolarsRayClusterConfig(
-        binary_path=binary_path,
+        # an engine that keeps running, or its actor exits with it
+        binary_path=str(_STUB_ENGINE),
         cluster_id=f"polars-nanook-{uuid.uuid4().hex[:8]}",
         license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
         scheduler=PolarsSchedulerConfig(

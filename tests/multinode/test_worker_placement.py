@@ -1,7 +1,7 @@
 """Worker placement on a simulated multi-node Ray cluster.
 
 Several raylets run on this one machine, without the dashboard. The binaries are
-replaced by `true`, so no license is needed: only the actors are under test.
+replaced by a stub that sleeps, so no license is needed: only the actors are under test.
 """
 
 import typing
