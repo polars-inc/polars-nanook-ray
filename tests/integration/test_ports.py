@@ -23,7 +23,7 @@ def test_workers_on_one_host_listen_on_distinct_ports(
 
     ports = [
         _listening_ports(ray.get(actor.get_worker_pid.remote()))
-        for actor in cluster._worker_actors
+        for actor in cluster._worker_actors.values()
     ]
 
     assert all(ports)
@@ -34,7 +34,7 @@ def test_worker_listens_on_fixed_port(ray_cluster: RayClusterFactory) -> None:
     port = _free_port()
     cluster = ray_cluster(num_workers=1, worker_task_port=port)
 
-    pid = ray.get(cluster._worker_actors[0].get_worker_pid.remote())
+    pid = ray.get(next(iter(cluster._worker_actors.values())).get_worker_pid.remote())
 
     assert port in _listening_ports(pid)
 
