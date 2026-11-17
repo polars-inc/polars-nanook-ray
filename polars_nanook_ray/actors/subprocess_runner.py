@@ -15,7 +15,7 @@ import toml
 logger = logging.getLogger(__name__)
 
 
-def service_args(config_path: str | pathlib.Path) -> list[str]:
+def _service_args(config_path: str | pathlib.Path) -> list[str]:
     """Return the arguments running the scheduler or worker service of a config."""
     return ["service", "--config-path", str(config_path)]
 
@@ -97,8 +97,13 @@ class SubprocessRunner:
         """Return the address the scheduler and workers reach the binary on."""
         return socket.gethostbyname(socket.gethostname())
 
-    def start(self, args: list[str], env: dict[str, str]) -> None:
-        """Launch the binary with the arguments given, without waiting for it."""
+    def new_engine_instance_id(self) -> str:
+        """Return a new engine instance ID for one start of this instance."""
+        return engine_instance_id(self.instance_id)
+
+    def start(self, config_path: pathlib.Path, env: dict[str, str]) -> None:
+        """Launch the service of the config given, without waiting for it."""
+        args = _service_args(config_path)
         self._handle = subprocess.Popen([*self.command, *args], env=env)
         logger.info("Process ID of %s: %d", self.name, self._handle.pid)
 
@@ -117,7 +122,7 @@ class SubprocessRunner:
     def _is_instance_of(self, cmdline: list[str], cluster_id: str) -> bool:
         """Return whether the command line runs this instance of the cluster given."""
         command, args = cmdline[: len(self.command)], cmdline[len(self.command) :]
-        if command != self.command or not args or args != service_args(args[-1]):
+        if command != self.command or not args or args != _service_args(args[-1]):
             return False
 
         try:

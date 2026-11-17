@@ -5,7 +5,7 @@ import typing
 import ray
 
 from polars_nanook_ray.actors.ports import resolve_ports
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner, service_args
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -104,7 +104,6 @@ class PolarsSchedulerActor:
             self.scheduler_host,
         )
 
-        args = service_args(self._config_path)
         env: dict[str, str] = {
             **os.environ,
             "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",
@@ -112,7 +111,7 @@ class PolarsSchedulerActor:
             "RUST_BACKTRACE": self.config_cluster.rust_backtrace,
         }
 
-        self._runner.start(args, env)
+        self._runner.start(self._config_path, env)
 
     def stop(self) -> None:
         """Terminate the scheduler process and clean up."""

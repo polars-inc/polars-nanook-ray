@@ -6,11 +6,7 @@ import typing
 import ray
 
 from polars_nanook_ray.actors.ports import resolve_ports
-from polars_nanook_ray.actors.subprocess_runner import (
-    SubprocessRunner,
-    engine_instance_id,
-    service_args,
-)
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -85,7 +81,7 @@ class PolarsWorkerActor:
 
         # Unique per start: a restarted worker registers as a new one rather than as the
         # worker it replaces, whose registration expires once its heartbeats stop.
-        instance_id = engine_instance_id(self.worker_name)
+        instance_id = self._runner.new_engine_instance_id()
         toml = self.config_cluster.config_worker(
             instance_id,
             self.worker_host,
@@ -99,7 +95,6 @@ class PolarsWorkerActor:
             "Starting %s on %s as %s", self.worker_name, self.worker_host, instance_id
         )
 
-        args = service_args(self._config_path)
         env: dict[str, str] = {
             **os.environ,
             "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",
@@ -108,7 +103,7 @@ class PolarsWorkerActor:
             "RUST_BACKTRACE": self.config_cluster.rust_backtrace,
         }
 
-        self._runner.start(args, env)
+        self._runner.start(self._config_path, env)
 
     def stop(self) -> None:
         """Terminate the worker process and clean up."""
