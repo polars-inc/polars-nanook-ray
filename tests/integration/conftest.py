@@ -14,7 +14,6 @@ import ray
 
 from polars_nanook_ray.cluster import PolarsRayCluster
 from polars_nanook_ray.config import (
-    PolarsDockerConfig,
     PolarsEnterpriseLicenseConfig,
     PolarsLicenseConfig,
     PolarsMonitoringConfig,
@@ -22,7 +21,6 @@ from polars_nanook_ray.config import (
     PolarsRayClusterConfig,
     PolarsScalingConfig,
     PolarsSchedulerConfig,
-    PolarsSubprocessConfig,
     PolarsWorkerConfig,
 )
 from polars_nanook_ray.context import RayClusterContext
@@ -33,8 +31,6 @@ TestQuery = typing.Callable[..., pl.DataFrame | None]
 
 RAY_GCS_PORT = 6379
 RAY_CLIENT_PORT = 10001
-
-USE_DOCKER = os.environ.get("PYTEST_USE_DOCKER") in ("1", "on", "true", "yes")
 
 
 def _free_port() -> int:
@@ -150,9 +146,6 @@ def ray_cluster_config() -> RayClusterConfigFactory:
         min_workers: int = 0,
         max_workers: int | None = None,
         license: PolarsLicenseConfig | None = None,
-        # enforced as quotas by containers
-        worker_cpus_hint: int = 1 if USE_DOCKER else 0,
-        worker_memory_hint: int = 512 * 1024**2 if USE_DOCKER else 1,
     ) -> PolarsRayClusterConfig:
         cluster_id = f"polars-nanook-{uuid.uuid4().hex[:8]}"
 
@@ -160,20 +153,10 @@ def ray_cluster_config() -> RayClusterConfigFactory:
             pathlib.Path(os.environ.get("LICENSE_PATH", "./license.json")).resolve()
         )
 
-        runtime: PolarsDockerConfig | PolarsSubprocessConfig
-        if USE_DOCKER:
-            runtime = PolarsDockerConfig(
-                image=os.environ.get("CONTAINER_IMAGE", "polars-nanook-ray:latest"),
-            )
-        else:
-            runtime = PolarsSubprocessConfig(
-                binary_path=os.environ.get("BINARY_PATH"),
-                single_host_cluster=True,
-            )
-
         return PolarsRayClusterConfig(
             # cluster configuration
-            runtime=runtime,
+            binary_path=os.environ.get("BINARY_PATH"),
+            single_host_cluster=True,
             worker_max_restarts=worker_max_restarts,
             # native binary configuration
             cluster_id=cluster_id,
@@ -199,10 +182,10 @@ def ray_cluster_config() -> RayClusterConfigFactory:
             ),
             worker=PolarsWorkerConfig(
                 # cluster configuration
-                cpus_hint=worker_cpus_hint,
-                memory_hint=worker_memory_hint,
+                cpus_hint=0,
+                memory_hint=1,
                 # native binary configuration
-                cpu_reserved=worker_cpus_hint or 1,
+                cpu_reserved=1,
                 task_port=_free_port_range(),
                 shuffle_port=_free_port_range(),
             ),

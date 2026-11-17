@@ -37,14 +37,11 @@ class PolarsRayCluster:
         PolarsRayClusterConfig,
         PolarsSchedulerConfig,
         PolarsServiceAccountLicenseConfig,
-        PolarsSubprocessConfig,
         PolarsWorkerConfig,
     )
 
     config = PolarsRayClusterConfig(
-        runtime=PolarsSubprocessConfig(
-            # single_host_cluster=True,
-        ),
+        # single_host_cluster=True,
         num_workers=4,
         license=PolarsServiceAccountLicenseConfig(
             workspace_id="<WORKSPACE_ID>",

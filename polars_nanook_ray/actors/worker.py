@@ -5,7 +5,7 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.runtimes import resolve_runner
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -48,14 +48,10 @@ class PolarsWorkerActor:
         self.scheduler_host = scheduler_host
 
         self._config_path: pathlib.Path = _resolve_config_path(self.worker_name)
-        self._runner = resolve_runner(
-            config.runtime,
+        self._runner = SubprocessRunner(
+            config.binary_path,
             self.worker_name,
             config.instance_name(self.worker_name),
-            cpus=config.worker.cpus_hint,
-            memory=config.worker.memory_hint,
-            mounts_rw=config.config_paths_rw_worker(),
-            mounts_ro={self._config_path.parent, *config.config_paths_ro()},
         )
 
         self.worker_host: str = self._runner.host

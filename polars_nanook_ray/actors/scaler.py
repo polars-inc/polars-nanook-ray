@@ -7,10 +7,9 @@ import ray
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 from ray.actor import ActorHandle
 
-from polars_nanook_ray.actors.runtimes import resolve_runner_class
 from polars_nanook_ray.actors.scheduler import resolve_scheduler_name
 from polars_nanook_ray.actors.utils import _handle_sigterm
-from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.config import SCALER_HOST, PolarsRayClusterConfig
 
 SCALER_NAME_PREFIX = "scaler"
 
@@ -168,12 +167,9 @@ class PolarsScalerActor:
     def start(self) -> None:
         """Start the HTTP server, if not already running."""
         if self._http_server is None:
-            runtime = self.config.runtime
-            bind_host = resolve_runner_class(runtime).gateway_addr(runtime)
-
             # fails with OSError if port is already used
             self._http_server = _ScalingHTTPServer(
-                (bind_host, self.config.scheduler.scaling.port),
+                (SCALER_HOST, self.config.scheduler.scaling.port),
                 self.config.cluster_id,
                 self.config.actor_response_timeout,
             )
@@ -185,7 +181,7 @@ class PolarsScalerActor:
 
             logger.info(
                 "Scaler HTTP server listening on %s:%d",
-                bind_host,
+                SCALER_HOST,
                 self._http_server.server_port,
             )
 

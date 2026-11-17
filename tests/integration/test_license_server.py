@@ -8,16 +8,14 @@ import ray
 
 from polars_nanook_ray.actors import PolarsLicenseServerActor
 from polars_nanook_ray.config import (
-    PolarsDockerConfig,
     PolarsLicenseServerConfig,
     PolarsRayLicenseServerConfig,
-    PolarsSubprocessConfig,
 )
 
-from .conftest import USE_DOCKER, RayClusterFactory, _free_port
+from .conftest import RayClusterFactory, _free_port
 
 _ENV_VARS = (
-    *(() if USE_DOCKER else ("BINARY_PATH_LICENSE_SERVER",)),
+    "BINARY_PATH_LICENSE_SERVER",
     "LICENSE_PATH",
     "TLS_BUNDLE_PATH",
 )
@@ -63,21 +61,8 @@ def test_license_server_reporting(
     tmp_path: pathlib.Path,
     ray_cluster: RayClusterFactory,
 ) -> None:
-    runtime: PolarsDockerConfig | PolarsSubprocessConfig
-    if USE_DOCKER:
-        runtime = PolarsDockerConfig(
-            image=os.environ.get(
-                "CONTAINER_IMAGE_LICENSE_SERVER",
-                "polars-nanook-ray-license-server:latest",
-            ),
-        )
-    else:
-        runtime = PolarsSubprocessConfig(
-            binary_path=os.environ["BINARY_PATH_LICENSE_SERVER"],
-        )
-
     config = PolarsRayLicenseServerConfig(
-        runtime=runtime,
+        binary_path=os.environ["BINARY_PATH_LICENSE_SERVER"],
         grpc_port=_free_port(),
         http_port=_free_port(),
         report_dir=str(tmp_path),
