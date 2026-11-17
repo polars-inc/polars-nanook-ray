@@ -1,6 +1,8 @@
 import functools
 import logging
 import pathlib
+import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -19,6 +21,20 @@ def service_args(config_path: str | pathlib.Path) -> list[str]:
 
 
 COMPUTE_SCRIPT = "polars-nanook-compute"
+
+
+def engine_instance_id(name: str) -> str:
+    """Return a new engine instance ID for one start of the instance `name`."""
+    return f"{name}-{secrets.token_hex(4)}"
+
+
+def is_engine_instance_of(engine_instance_id: object, name: str) -> bool:
+    """Return whether an engine instance ID is `name`, or one start of it."""
+    return engine_instance_id == name or (
+        isinstance(engine_instance_id, str)
+        and re.fullmatch(rf"{re.escape(name)}-[0-9a-f]{{8}}", engine_instance_id)
+        is not None
+    )
 
 
 def _resolve_compute_script() -> str:
@@ -109,9 +125,8 @@ class SubprocessRunner:
         except (OSError, ValueError):  # unreadable, not UTF-8 or not TOML
             return False
 
-        return (
-            config.get("cluster_id") == cluster_id
-            and config.get("instance_id") == self.instance_id
+        return config.get("cluster_id") == cluster_id and is_engine_instance_of(
+            config.get("instance_id"), self.instance_id
         )
 
     def stop_orphans(self, cluster_id: str) -> None:

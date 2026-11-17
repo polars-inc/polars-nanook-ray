@@ -869,7 +869,7 @@ class PolarsRayClusterConfig(BaseModel):
 
     def config_worker(
         self,
-        worker_id: int,
+        instance_id: str,
         worker_host: str,
         scheduler_host: str,
         *,
@@ -878,7 +878,7 @@ class PolarsRayClusterConfig(BaseModel):
     ) -> str:
         """Render the TOML configuration of a worker, binding the ports given."""
         doc: dict = {
-            "instance_id": f"worker-{worker_id}",
+            "instance_id": instance_id,
             "cluster_id": self.cluster_id,
             "cluster_mode": "ray",
             "memory_limit": self.worker.memory_limit,

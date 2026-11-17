@@ -6,7 +6,11 @@ import typing
 import ray
 
 from polars_nanook_ray.actors.ports import resolve_ports
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner, service_args
+from polars_nanook_ray.actors.subprocess_runner import (
+    SubprocessRunner,
+    engine_instance_id,
+    service_args,
+)
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -79,8 +83,11 @@ class PolarsWorkerActor:
         )
         self.task_port = ports["task_port"]
 
+        # Unique per start: a restarted worker registers as a new one rather than as the
+        # worker it replaces, whose registration expires once its heartbeats stop.
+        instance_id = engine_instance_id(self.worker_name)
         toml = self.config_cluster.config_worker(
-            self.worker_id,
+            instance_id,
             self.worker_host,
             self.scheduler_host,
             task_port=ports["task_port"],
@@ -88,7 +95,9 @@ class PolarsWorkerActor:
         )
         _write_config(self._config_path, toml)
 
-        logger.info("Starting %s on %s", self.worker_name, self.worker_host)
+        logger.info(
+            "Starting %s on %s as %s", self.worker_name, self.worker_host, instance_id
+        )
 
         args = service_args(self._config_path)
         env: dict[str, str] = {

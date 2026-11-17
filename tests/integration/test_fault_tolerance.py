@@ -52,7 +52,10 @@ def _wait_for_worker_restart(
     raise RuntimeError(msg)
 
 
-def test_worker_restart_cleanup(ray_cluster: RayClusterFactory) -> None:
+def test_worker_restart_cleanup(
+    ray_cluster: RayClusterFactory,
+    run_query: TestQuery,
+) -> None:
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
 
@@ -73,6 +76,9 @@ def test_worker_restart_cleanup(ray_cluster: RayClusterFactory) -> None:
 
         assert new_binary_pid != binary_pid
         assert not psutil.pid_exists(binary_pid)
+
+        # the restarted worker takes over from the one it replaces
+        run_query(cluster=cluster)
     finally:
         with contextlib.suppress(ProcessLookupError):
             os.kill(binary_pid, signal.SIGKILL)
