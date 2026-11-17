@@ -85,6 +85,27 @@ def test_worker_restart_cleanup(
             os.kill(binary_pid, signal.SIGKILL)
 
 
+def test_worker_binary_death_restarts_its_actor(
+    ray_cluster: RayClusterFactory,
+    run_query: TestQuery,
+) -> None:
+    cluster = ray_cluster(num_workers=1)
+    cluster_id = cluster.config.cluster_id
+
+    name, actor = next(iter(cluster._worker_actors.items()))
+    actor_pid = _actor_pid(cluster_id, name)
+    binary_pid = ray.get(actor.get_worker_pid.remote())
+
+    # the actor stays up, only its binary dies, e.g. by the OOM killer
+    os.kill(binary_pid, signal.SIGKILL)
+
+    new_actor_pid = _wait_for_worker_restart(cluster_id, name, actor, actor_pid)
+
+    assert new_actor_pid != actor_pid
+    assert ray.get(actor.get_worker_pid.remote()) != binary_pid
+    run_query(cluster=cluster)
+
+
 def test_old_worker_reregister_with_new_scheduler(
     ray_cluster: RayClusterFactory,
     run_query: TestQuery,
