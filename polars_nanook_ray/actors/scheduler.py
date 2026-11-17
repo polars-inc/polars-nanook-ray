@@ -7,6 +7,7 @@ import ray
 from polars_nanook_ray.actors.pool import WorkerPool
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
+    _log_to_stderr,
     _remove_config,
     _resolve_config_path,
     _write_config,
@@ -36,6 +37,7 @@ class PolarsSchedulerActor:
     """The central service, distributing tasks and piloting autoscaling."""
 
     def __init__(self, config: PolarsRayClusterConfig) -> None:
+        _log_to_stderr()
         self.config_cluster: PolarsRayClusterConfig = config
 
         self._config_path: pathlib.Path = _resolve_config_path(SCHEDULER)

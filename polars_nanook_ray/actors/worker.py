@@ -9,6 +9,7 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from polars_nanook_ray.actors.pool import Node, WorkerExited, WorkerSlot
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
+    _log_to_stderr,
     _remove_config,
     _resolve_config_path,
     _write_config,
@@ -42,6 +43,7 @@ class PolarsWorkerActor:
         slot: WorkerSlot,
         scheduler_host: str,
     ) -> None:
+        _log_to_stderr()
         self.config_cluster: PolarsRayClusterConfig = config
 
         self.worker_id: WorkerId = slot.worker_id

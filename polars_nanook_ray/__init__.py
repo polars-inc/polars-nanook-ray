@@ -1,6 +1,3 @@
-import logging
-import os
-
 from polars_nanook_ray.actors import (
     PolarsScalerActor,
     PolarsSchedulerActor,
@@ -42,5 +39,3 @@ __all__ = [
     "PolarsWorkerConfig",
     "RayClusterContext",
 ]
-
-logging.basicConfig(level=os.getenv("LOGLEVEL", "INFO").upper())
