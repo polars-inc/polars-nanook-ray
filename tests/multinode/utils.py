@@ -56,11 +56,14 @@ def make_config(worker_cpus: int = 1, **kwargs: typing.Any) -> PolarsRayClusterC
     )
 
 
-def run_scheduler(config: PolarsRayClusterConfig) -> typing.Iterator[ActorHandle]:
+def run_scheduler(
+    config: PolarsRayClusterConfig, max_restarts: int = 0
+) -> typing.Iterator[ActorHandle]:
     """Yield a scheduler actor on the head node, then stop it and its workers."""
     actor = PolarsSchedulerActor.options(  # type: ignore[attr-defined]
         name=SCHEDULER.actor_name,
         namespace=config.cluster_id,
+        max_restarts=max_restarts,
         **placement_options(
             "scheduler",
             resource=config.scheduler.placement_resource,

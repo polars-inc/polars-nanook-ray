@@ -166,9 +166,10 @@ workers: `start()` only tops the pool up to `num_workers`. Each start of a worke
 engine registers with the scheduler under a new instance ID, e.g.
 `worker-0-1a2b3c4d`.
 
-The actors are running in `detached` mode and survive past the script: one can
-reconnect with the same `ray.init()` and `cluster` gymnastics from another
-process.
+The scheduler and scaler actors are running in `detached` mode and survive past the
+script: one can reconnect with the same `ray.init()` and `cluster` gymnastics from
+another process. The workers belong to the scheduler actor: they stop when it does, and
+a restarted scheduler starts new ones.
 To clean all actors and underlying processes, Ray itself needs to be shutdown
 using the following command:
 
