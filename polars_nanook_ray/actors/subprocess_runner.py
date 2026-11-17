@@ -1,8 +1,6 @@
 import functools
 import logging
 import pathlib
-import re
-import secrets
 import shutil
 import socket
 import subprocess
@@ -11,6 +9,8 @@ import sysconfig
 
 import psutil
 import toml
+
+from polars_nanook_ray.actors.engine_instance_id import EngineInstanceId
 
 logger = logging.getLogger(__name__)
 
@@ -21,20 +21,6 @@ def _service_args(config_path: str | pathlib.Path) -> list[str]:
 
 
 COMPUTE_SCRIPT = "polars-nanook-compute"
-
-
-def engine_instance_id(name: str) -> str:
-    """Return a new engine instance ID for one start of the instance `name`."""
-    return f"{name}-{secrets.token_hex(4)}"
-
-
-def is_engine_instance_of(engine_instance_id: object, name: str) -> bool:
-    """Return whether an engine instance ID is `name`, or one start of it."""
-    return engine_instance_id == name or (
-        isinstance(engine_instance_id, str)
-        and re.fullmatch(rf"{re.escape(name)}-[0-9a-f]{{8}}", engine_instance_id)
-        is not None
-    )
 
 
 def _resolve_compute_script() -> str:
@@ -97,10 +83,6 @@ class SubprocessRunner:
         """Return the address the scheduler and workers reach the binary on."""
         return socket.gethostbyname(socket.gethostname())
 
-    def new_engine_instance_id(self) -> str:
-        """Return a new engine instance ID for one start of this instance."""
-        return engine_instance_id(self.instance_id)
-
     def start(self, config_path: pathlib.Path, env: dict[str, str]) -> None:
         """Launch the service of the config given, without waiting for it."""
         args = _service_args(config_path)
@@ -130,8 +112,11 @@ class SubprocessRunner:
         except (OSError, ValueError):  # unreadable, not UTF-8 or not TOML
             return False
 
-        return config.get("cluster_id") == cluster_id and is_engine_instance_of(
-            config.get("instance_id"), self.instance_id
+        instance_id = EngineInstanceId.parse(config.get("instance_id"))
+        return (
+            config.get("cluster_id") == cluster_id
+            and instance_id is not None
+            and instance_id.actor_name == self.instance_id
         )
 
     def stop_orphans(self, cluster_id: str) -> None:

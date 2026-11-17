@@ -4,11 +4,9 @@ import typing
 
 import ray
 
+from polars_nanook_ray.actors.engine_instance_id import EngineInstanceId
 from polars_nanook_ray.actors.ports import resolve_ports
-from polars_nanook_ray.actors.subprocess_runner import (
-    SubprocessRunner,
-    is_engine_instance_of,
-)
+from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -44,11 +42,11 @@ def _resolve_worker_actor_names(
 ) -> set[str] | None:
     """Return the worker actors the engine instance IDs or actor names given are."""
     names = {
-        name
-        for name in worker_names
-        if any(is_engine_instance_of(i, name) for i in instance_ids or ())
+        instance_id.actor_name
+        for value in instance_ids or ()
+        if (instance_id := EngineInstanceId.parse(value)) is not None
     }
-    return names or None
+    return names & worker_names or None
 
 
 @ray.remote

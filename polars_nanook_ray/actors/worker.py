@@ -5,6 +5,7 @@ import typing
 
 import ray
 
+from polars_nanook_ray.actors.engine_instance_id import EngineInstanceId
 from polars_nanook_ray.actors.ports import resolve_ports
 from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
@@ -81,9 +82,9 @@ class PolarsWorkerActor:
 
         # Unique per start: a restarted worker registers as a new one rather than as the
         # worker it replaces, whose registration expires once its heartbeats stop.
-        instance_id = self._runner.new_engine_instance_id()
+        instance_id = EngineInstanceId.new(self.worker_name)
         toml = self.config_cluster.config_worker(
-            instance_id,
+            str(instance_id),
             self.worker_host,
             self.scheduler_host,
             task_port=ports["task_port"],
