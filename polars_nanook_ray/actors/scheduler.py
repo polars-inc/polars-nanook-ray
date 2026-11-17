@@ -4,7 +4,6 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -21,6 +20,9 @@ from polars_nanook_ray.actors.worker import (
     resolve_worker_name,
 )
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.engine_instance_id import EngineInstanceId
+from polars_nanook_ray.ports import resolve_ports
+from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 if typing.TYPE_CHECKING:
     import pathlib
@@ -33,6 +35,18 @@ logger = logging.getLogger(__name__)
 
 def resolve_scheduler_name() -> str:
     return SCHEDULER_NAME_PREFIX
+
+
+def _resolve_worker_actor_names(
+    instance_ids: set[str] | None, worker_names: set[str]
+) -> set[str] | None:
+    """Return the worker actors the engine instance IDs or actor names given are."""
+    names = {
+        instance_id.actor_name
+        for value in instance_ids or ()
+        if (instance_id := EngineInstanceId.parse(value)) is not None
+    }
+    return names & worker_names or None
 
 
 @ray.remote
@@ -90,13 +104,9 @@ class PolarsSchedulerActor:
         if self._runner.is_started():
             return
 
-        self._runner.stop_orphans(
-            self.config_cluster.cluster_id,
-            [
-                self.config_cluster.scheduler.worker_registration_port,
-                self.config_cluster.scheduler.client_port,
-            ],
-        )
+        self._runner.stop_orphans(self.config_cluster.cluster_id)
+
+        resolve_ports(self.config_cluster.config_bind_ports_scheduler())
 
         toml = self.config_cluster.config_scheduler(self.scheduler_host)
         _write_config(self._config_path, toml)
@@ -107,7 +117,6 @@ class PolarsSchedulerActor:
             self.scheduler_host,
         )
 
-        args: list[str] = ["service", "--config-path", str(self._config_path)]
         env: dict[str, str] = {
             **os.environ,
             "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",
@@ -115,7 +124,7 @@ class PolarsSchedulerActor:
             "RUST_BACKTRACE": self.config_cluster.rust_backtrace,
         }
 
-        self._runner.start(args, env)
+        self._runner.start(self._config_path, env)
 
     def stop(self) -> None:
         """Terminate the scheduler process and clean up."""
@@ -181,12 +190,13 @@ class PolarsSchedulerActor:
             and `max_workers`. If neither `delete` nor `keep` is given, random workers
             are removed.
         delete
-            Set of worker instances to terminate. Applied before `keep`. Names that
-            are not worker actors are ignored.
-        keep
-            Set of worker instances to keep running, while terminating all the others
-            not already removed via `delete`. Names that are not worker actors are
+            Set of worker instances to terminate, as engine instance IDs or actor
+            names. Applied before `keep`. Names that are not worker actors are
             ignored.
+        keep
+            Set of worker instances to keep running, as engine instance IDs or actor
+            names, while terminating all the others not already removed via
+            `delete`. Names that are not worker actors are ignored.
 
         """
         min_workers = self.config_cluster.min_workers
@@ -210,8 +220,8 @@ class PolarsSchedulerActor:
             self.config_cluster.cluster_id, WORKER_NAME_PREFIX
         )
 
-        _delete = (delete or set()) & worker_names or None
-        _keep = (keep or set()) & worker_names or None
+        _delete = _resolve_worker_actor_names(delete, worker_names)
+        _keep = _resolve_worker_actor_names(keep, worker_names)
 
         if len(worker_names) < num_workers:
             # offset the id used by each worker to avoid collisions with running worker

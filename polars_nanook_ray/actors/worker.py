@@ -5,7 +5,6 @@ import typing
 
 import ray
 
-from polars_nanook_ray.actors.subprocess_runner import SubprocessRunner
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -13,6 +12,9 @@ from polars_nanook_ray.actors.utils import (
     _write_config,
 )
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.engine_instance_id import EngineInstanceId
+from polars_nanook_ray.ports import resolve_ports
+from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 if typing.TYPE_CHECKING:
     import pathlib
@@ -55,6 +57,7 @@ class PolarsWorkerActor:
         )
 
         self.worker_host: str = self._runner.host
+        self.task_port: int | None = None
 
         self.start()
         _handle_sigterm(self.stop)
@@ -67,26 +70,32 @@ class PolarsWorkerActor:
         if self._runner.is_started():
             return
 
-        offset = self.config_cluster._worker_port_offset(self.worker_id)
+        self._runner.stop_orphans(self.config_cluster.cluster_id)
 
-        self._runner.stop_orphans(
-            self.config_cluster.cluster_id,
-            [
-                self.config_cluster.worker.task_port + offset,
-                self.config_cluster.worker.shuffle_port + offset,
-            ],
+        ports = resolve_ports(
+            {
+                "task_port": self.config_cluster.worker.task_port,
+                "shuffle_port": self.config_cluster.worker.shuffle_port,
+            }
         )
+        self.task_port = ports["task_port"]
 
+        # Unique per start: a restarted worker registers as a new one rather than as the
+        # worker it replaces, whose registration expires once its heartbeats stop.
+        instance_id = EngineInstanceId.new(self.worker_name)
         toml = self.config_cluster.config_worker(
-            self.worker_id,
+            str(instance_id),
             self.worker_host,
             self.scheduler_host,
+            task_port=ports["task_port"],
+            shuffle_port=ports["shuffle_port"],
         )
         _write_config(self._config_path, toml)
 
-        logger.info("Starting %s on %s", self.worker_name, self.worker_host)
+        logger.info(
+            "Starting %s on %s as %s", self.worker_name, self.worker_host, instance_id
+        )
 
-        args: list[str] = ["service", "--config-path", str(self._config_path)]
         env: dict[str, str] = {
             **os.environ,
             "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",
@@ -95,7 +104,7 @@ class PolarsWorkerActor:
             "RUST_BACKTRACE": self.config_cluster.rust_backtrace,
         }
 
-        self._runner.start(args, env)
+        self._runner.start(self._config_path, env)
 
     def stop(self) -> None:
         """Terminate the worker process and clean up."""
@@ -107,9 +116,10 @@ class PolarsWorkerActor:
         """Return whether the worker process is alive and listening for tasks."""
         self._runner._raise_if_exited()
 
-        return self._runner.is_alive() and self._runner.is_listening(
-            self.config_cluster.worker.task_port
-            + self.config_cluster._worker_port_offset(self.worker_id)
+        return (
+            self.task_port is not None
+            and self._runner.is_alive()
+            and self._runner.is_listening(self.task_port)
         )
 
     def get_worker_pid(self) -> int | None:
