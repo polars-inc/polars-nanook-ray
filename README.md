@@ -184,6 +184,8 @@ Note the cluster always _starts_ `num_workers` workers: the bounds are reported
 back to the binary on `GET /scale_config`, seeded into `max_workers_per_query`,
 and only enforced on rescaling, where a `POST /scale_to` count outside them is
 clamped.
+A scale-down that names no workers to keep or delete removes those on lost nodes
+first, then the last ones placed, so workers stay spread across nodes.
 Requesting more workers is done via the client: `.distributed(min_workers=X)`.
 
 The HTTP server is unauthenticated and binds `127.0.0.1`. It accepts only
