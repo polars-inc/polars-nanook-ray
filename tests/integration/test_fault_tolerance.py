@@ -4,6 +4,7 @@ import signal
 import time
 
 import psutil
+import pytest
 import ray
 from ray.actor import ActorHandle
 from ray.util.state import list_actors
@@ -106,9 +107,11 @@ def test_worker_binary_death_restarts_its_actor(
     run_query(cluster=cluster)
 
 
-def test_old_worker_reregister_with_new_scheduler(
+@pytest.mark.parametrize("kill", ["actor", "binary"])
+def test_scheduler_restarts_and_workers_register_again(
     ray_cluster: RayClusterFactory,
     run_query: TestQuery,
+    kill: str,
 ) -> None:
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
@@ -117,35 +120,26 @@ def test_old_worker_reregister_with_new_scheduler(
     sched_pid = _actor_pid(cluster_id, SCHEDULER_NAME_PREFIX)
     binary_pid = ray.get(scheduler_actor.get_scheduler_pid.remote())
 
-    # killing the actor will orphan the child process
-    os.kill(sched_pid, signal.SIGKILL)
-    with contextlib.suppress(ProcessLookupError):
-        os.kill(binary_pid, signal.SIGKILL)
-    time.sleep(2)
+    # the actor's death orphans the binary, the binary's death exits the actor
+    os.kill(sched_pid if kill == "actor" else binary_pid, signal.SIGKILL)
+    if kill == "actor":
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(binary_pid, signal.SIGKILL)
 
-    # ray needs a moment to notice the actor died before deregistering its name; calling
-    # cluster.start() before that "reconnects" to a zombie actor: still resolves but is
-    # already dead
-    deadline = time.monotonic() + 30
+    # Ray restarts the scheduler on the head, with no cluster.start() needed
+    deadline = time.monotonic() + 60
+    new_sched_pid = None
     while time.monotonic() < deadline:
-        try:
-            ray.get_actor(SCHEDULER_NAME_PREFIX, namespace=cluster_id)
-        except ValueError:
-            break
-        time.sleep(2)
-    else:
-        msg = f"Ray never deregistered the killed '{SCHEDULER_NAME_PREFIX}' actor"
-        raise AssertionError(msg)
+        with contextlib.suppress(AssertionError):
+            new_sched_pid = _actor_pid(cluster_id, SCHEDULER_NAME_PREFIX)
+            if new_sched_pid != sched_pid:
+                break
+        time.sleep(1)
+    assert new_sched_pid not in (None, sched_pid)
 
-    # scheduler is gone, create a fresh one (worker should still be hanging around)
-    cluster.start()
-    new_sched_pid = _actor_pid(cluster_id, SCHEDULER_NAME_PREFIX)
-    assert new_sched_pid != sched_pid
-    time.sleep(2)
-
-    # allow some retries for reregistering
+    # allow some retries for the worker to register again
     result = None
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         try:
             result = run_query(cluster=cluster)
