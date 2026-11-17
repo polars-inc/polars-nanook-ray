@@ -58,9 +58,14 @@ def test_license_server_uri_reaches_scheduler_and_workers(license_) -> None:
     assert worker["license"] == expected
 
 
-def test_unpinned_scheduler_rejects_scaling() -> None:
-    with pytest.raises(pydantic.ValidationError, match="placement_resource"):
-        PolarsSchedulerConfig(
-            placement_resource=None,
-            scaling=PolarsScalingConfig(enabled=True),
-        )
+def test_unpinned_scheduler_scales() -> None:
+    scheduler = PolarsSchedulerConfig(
+        placement_resource=None,
+        scaling=PolarsScalingConfig(enabled=True, port=4001),
+    )
+
+    rendered = toml.loads(
+        _cluster_config(scheduler=scheduler).config_scheduler("10.0.0.1")
+    )
+
+    assert rendered["scaling"]["rest"] == {"uri": "http://127.0.0.1:4001"}

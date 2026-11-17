@@ -4,6 +4,7 @@ import typing
 import ray
 
 from polars_nanook_ray.actors.pool import WorkerPool
+from polars_nanook_ray.actors.scaling import serve_scaling
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _log_to_stderr,
@@ -13,6 +14,9 @@ from polars_nanook_ray.config import PolarsRayClusterConfig
 from polars_nanook_ray.identity import SCHEDULER, WorkerId
 from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
+
+if typing.TYPE_CHECKING:
+    from polars_nanook_ray.actors.scaling import ScalingEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,7 @@ class PolarsSchedulerActor:
         self._pool = WorkerPool(
             RayWorkers(config, self.scheduler_host), config, config.num_workers
         )
+        self._scaling: ScalingEndpoint | None = None
 
         self.start()
         _handle_sigterm(self._stop_scheduler)
@@ -47,7 +52,11 @@ class PolarsSchedulerActor:
         self._stop_scheduler()
 
     def start(self) -> None:
-        """Spawn the scheduler process, if not already running."""
+        """Spawn the scheduler process, if not already running.
+
+        Serves scaling requests before launching the engine, which asks for its scaling
+        config as it starts.
+        """
         if self._runner.is_started():
             return
 
@@ -61,17 +70,30 @@ class PolarsSchedulerActor:
             self.scheduler_host,
         )
 
-        self._runner.start(toml, self.config_cluster.engine_env())
+        if self.config_cluster.scheduler.scaling.enabled:
+            self._scaling = serve_scaling(self._pool, self.config_cluster)
+        try:
+            self._runner.start(toml, self.config_cluster.engine_env())
+        except BaseException:
+            self._stop_scaling()
+            raise
 
     def stop(self) -> None:
-        """Stop the workers, then the scheduler process."""
+        """Stop scaling, the workers, then the scheduler process."""
+        self._stop_scaling()
         self._pool.stop()
         self._stop_scheduler()
 
     def _stop_scheduler(self) -> None:
         """Terminate the scheduler process and clean up; Ray then stops its workers."""
         self._pool.halt()
+        self._stop_scaling()
         self._runner.stop()
+
+    def _stop_scaling(self) -> None:
+        """Stop serving scaling requests; those in progress may finish."""
+        if self._scaling is not None:
+            self._scaling.close()
 
     def is_ready(self) -> bool:
         """Return whether the scheduler process is alive and accepting registration."""
@@ -107,16 +129,6 @@ class PolarsSchedulerActor:
     def get_scheduler_pid(self) -> int | None:
         """Return the OS process ID of the scheduler binary subprocess."""
         return self._runner.pid()
-
-    def get_scaling_status(self) -> dict[str, int | set[WorkerId] | None]:
-        """Return the current/desired worker counts and configured bounds."""
-        status = self._pool.status()
-        return {
-            "available": status.running,
-            "desired": status.target,
-            "min": self.config_cluster.min_workers,
-            "max": self.config_cluster.max_workers,
-        }
 
     def ensure_workers(self, num_workers: int) -> set[WorkerId]:
         """Start workers until there are at least `num_workers`; return them all.

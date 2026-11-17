@@ -1,5 +1,4 @@
 from polars_nanook_ray.actors import (
-    PolarsScalerActor,
     PolarsSchedulerActor,
     PolarsWorkerActor,
 )
@@ -30,7 +29,6 @@ __all__ = [
     "PolarsObservatoryConfig",
     "PolarsRayCluster",
     "PolarsRayClusterConfig",
-    "PolarsScalerActor",
     "PolarsScalingConfig",
     "PolarsSchedulerActor",
     "PolarsSchedulerConfig",

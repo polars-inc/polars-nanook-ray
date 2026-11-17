@@ -140,9 +140,13 @@ class WorkerPool:
         missing workers as the nodes have room for. When removing, `delete` names
         workers to remove, then `keep` workers to keep while removing all the others;
         both take engine instance IDs or actor names, and ignore other names. Without
-        either, removes workers on lost nodes first, then the last ones placed.
+        either, removes workers on lost nodes first, then the last ones placed. Does
+        nothing once halted.
         """
         with self._lock:
+            if self._halted.is_set():
+                logger.warning("Ignored a rescale to %d workers: halted", num_workers)
+                return
             num_workers = self._clamp(num_workers)
             self._target = num_workers  # first, for no refill to undo the removal
             running = self._workers.running()
@@ -203,7 +207,7 @@ class WorkerPool:
             ).start()
 
     def halt(self) -> None:
-        """Stop refilling, for good; leave the workers running."""
+        """Stop refilling and rescaling, for good; leave the workers running."""
         self._halted.set()
 
     def stop(self) -> None:

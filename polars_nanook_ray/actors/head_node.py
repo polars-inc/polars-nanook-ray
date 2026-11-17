@@ -11,13 +11,11 @@ def placement_options(
     resource: str | None,
     num_cpus: float,
     memory: int | None = None,
-    single_node: bool = False,
 ) -> dict[str, typing.Any]:
     """Ray actor options pinning the actor `name` to the nodes advertising `resource`.
 
     `None` leaves the placement to Ray. Raises a `RuntimeError` right away if no
-    candidate node can ever hold the actor, rather than leaving it pending forever,
-    or, with `single_node`, if more than one node is a candidate.
+    candidate node can ever hold the actor, rather than leaving it pending forever.
     """
     requested = {"CPU": num_cpus, "memory": memory or 0}
     where = _describe_placement(resource)
@@ -32,14 +30,6 @@ def placement_options(
             "found" if resource is None else f"advertises the `{resource}` resource"
         )
         msg = f"Cannot place the {name}: no alive Ray node {missing}."
-        raise RuntimeError(msg)
-
-    if single_node and len(candidates) > 1:
-        msg = (
-            f"Cannot place the {name} on {where}: {len(candidates)} alive Ray nodes "
-            "qualify, but the scaler must share the scheduler's node. Advertise "
-            "`placement_resource` on a single node."
-        )
         raise RuntimeError(msg)
 
     if not any(_fits(node, requested) for node in candidates):

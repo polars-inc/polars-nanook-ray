@@ -76,9 +76,9 @@ def node(
 def config(**kwargs: typing.Any) -> PolarsRayClusterConfig:
     kwargs.setdefault("worker", PolarsWorkerConfig(cpus_hint=1, memory_hint=1))
     kwargs.setdefault("worker_reconcile_interval", 10)
+    kwargs.setdefault("scheduler", PolarsSchedulerConfig())
     return PolarsRayClusterConfig(
         license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
-        scheduler=PolarsSchedulerConfig(),
         **kwargs,
     )
 
@@ -556,3 +556,15 @@ def test_not_ready_forgets_the_workers_stopped() -> None:
     worker_pool.stop()
 
     assert worker_pool.not_ready() == set()
+
+
+def test_a_stopped_pool_ignores_rescales() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+    worker_pool.stop()
+
+    worker_pool.rescale(2)
+
+    assert workers.running() == set()
+    assert worker_pool.status().target == 0

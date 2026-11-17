@@ -143,7 +143,7 @@ def _assert_stopped(config: PolarsRayClusterConfig) -> None:
         ray.get_actor(SCHEDULER.actor_name, namespace=config.cluster_id)
 
 
-def test_start_waits_for_the_scaler_scheduler_and_workers(
+def test_start_waits_for_the_scheduler_and_workers(
     cpu_node_ids: set[str],  # noqa: ARG001
 ) -> None:
     scheduler = PolarsSchedulerConfig(

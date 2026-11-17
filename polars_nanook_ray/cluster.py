@@ -9,10 +9,8 @@ from ray.exceptions import ActorDiedError, ActorUnavailableError, GetTimeoutErro
 from polars_nanook_ray.actors import (
     Endpoints,
     NoRoomForWorkers,
-    PolarsScalerActor,
     PolarsSchedulerActor,
     WorkerExited,
-    resolve_scaler_name,
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import placement_options
@@ -23,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class PolarsRayCluster:
-    """Manage the lifecycles of the scheduler, workers and scaler actors.
+    """Manage the lifecycles of the scheduler and worker actors.
 
     ```py
     import polars as pl
@@ -71,7 +69,6 @@ class PolarsRayCluster:
     def __init__(self, config: PolarsRayClusterConfig) -> None:
         self.config = config
 
-        self._scaler_actor: typing.Any = None
         self._scheduler_actor: typing.Any = None
 
     def _find_actor(self, name: str) -> typing.Any:
@@ -105,15 +102,6 @@ class PolarsRayCluster:
             resource=self.config.scheduler.placement_resource,
             num_cpus=self.config.scheduler.cpus_hint,
             memory=self.config.scheduler.memory_hint,
-            single_node=self.config.scheduler.scaling.enabled,
-        )
-
-    def _scaler_options(self) -> dict[str, typing.Any]:
-        return placement_options(  # same node as the scheduler
-            "scaler",
-            resource=self.config.scheduler.placement_resource,
-            num_cpus=0,
-            single_node=True,
         )
 
     def _wait_until_ready(self, actor: typing.Any, name: str) -> None:
@@ -174,15 +162,6 @@ class PolarsRayCluster:
         nodes have no room for `num_workers`, removing the actors it started.
         """
         created = self._find_actor(SCHEDULER.actor_name) is None
-        if created:
-            self._scheduler_options()  # fail before the scaler is created
-
-        if self.config.scheduler.scaling.enabled:
-            self._scaler_actor = self._find_or_create_actor(
-                resolve_scaler_name(), PolarsScalerActor, self._scaler_options
-            )
-            self._wait_until_ready(self._scaler_actor, "scaler")
-
         self._scheduler_actor = self._find_or_create_actor(
             SCHEDULER.actor_name, PolarsSchedulerActor, self._scheduler_options
         )
@@ -207,17 +186,7 @@ class PolarsRayCluster:
         logger.info(msg)
 
     def stop(self) -> None:
-        """Terminate all the actors (scaler, workers, scheduler)."""
-        if self.config.scheduler.scaling.enabled:
-            self._scaler_actor = self._find_actor(resolve_scaler_name())
-            if self._scaler_actor is not None:
-                logger.info("Stopping scaler...")
-                terminate_actors(
-                    [self._scaler_actor],
-                    self.config.actor_response_timeout,
-                )
-                self._scaler_actor = None
-
+        """Terminate all the actors (workers, scheduler)."""
         # without a scheduler there are no workers: they die with it
         self._scheduler_actor = self._find_actor(SCHEDULER.actor_name)
         if self._scheduler_actor is not None:

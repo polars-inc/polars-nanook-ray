@@ -38,17 +38,16 @@ ray start \
   --ray-client-server-port="10001"
 ```
 
-The scheduler and the scaler run on the Ray head node by default,
+The scheduler runs on the Ray head node by default,
 pinned with Ray's built-in `node:__internal_head__` resource; no custom resource is
-needed. They request no CPUs by default, so a head node started with `--num-cpus=0`
+needed. It requests no CPUs by default, so a head node started with `--num-cpus=0`
 works too.
 
-To pin them to another node, give that node a custom resource, for example
+To pin it to another node, give that node a custom resource, for example
 `ray start --resources='{"scheduler_node": 1}'`, and set
-`PolarsSchedulerConfig(placement_resource="scheduler_node")`. With scaling enabled,
-only one node may advertise it, as the scaler must share the scheduler's node.
+`PolarsSchedulerConfig(placement_resource="scheduler_node")`.
 `placement_resource=None` lets Ray place the scheduler on any node that fits its
-`cpus_hint` and `memory_hint`; scaling then can't be enabled.
+`cpus_hint` and `memory_hint`.
 
 If you do not already have one, create a Polars Nanook service account through the
 [Polars Nanook portal](https://nanook.pola.rs/api/redirects/register).
@@ -160,7 +159,7 @@ warning; `start()` fails right away instead.
 To run several workers on one machine, raise `workers_per_node`. Each worker picks
 free ports unless `task_port` and `shuffle_port` are fixed.
 
-The scheduler and scaler actors are running in `detached` mode and survive past the
+The scheduler actor is running in `detached` mode and survives past the
 script: one can reconnect with the same `ray.init()` and `cluster` gymnastics from
 another process. The workers belong to the scheduler actor: they stop when it does, and
 a restarted scheduler starts new ones.
@@ -178,10 +177,8 @@ ray stop --force
 
 ## Autoscaling
 
-A dedicated scaler actor, pinned to the scheduler node, runs an HTTP server to
-handle scaling requests sent by the underlying binary.
-These requests are relayed to the scheduler actor, which in turn adds or removes
-Ray worker actors in response.
+The scheduler actor runs an HTTP server to handle scaling requests sent by the
+underlying binary, and adds or removes Ray worker actors in response.
 
 Enable it via `PolarsScalingConfig` on the scheduler, and optionally set
 `min_workers` and/or `max_workers` on the cluster config to bound how far it may
