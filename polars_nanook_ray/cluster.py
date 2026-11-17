@@ -20,7 +20,6 @@ from polars_nanook_ray.actors import (
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import placement_options
-from polars_nanook_ray.actors.pool import WorkerPool
 from polars_nanook_ray.config import PolarsRayClusterConfig
 from polars_nanook_ray.identity import SCHEDULER
 
@@ -288,7 +287,8 @@ class PolarsRayCluster:
         except NoRoomForWorkers as exc:
             if created:
                 self.stop()
-            raise RuntimeError(str(getattr(exc, "cause", exc))) from None
+            # Ray raises a subclass of the actor's error, with the actor's traceback
+            raise exc.cause from None  # type: ignore[attr-defined]
 
         self._wait_for_scheduler()
         self._wait_for_workers()
@@ -355,7 +355,8 @@ class PolarsRayCluster:
                 return
 
         # no scheduler to stop them: stop any worker left behind from here
-        WorkerPool(RayWorkers(self.config), self.config, 0).stop()
+        workers = RayWorkers(self.config)
+        workers.terminate(workers.running())
 
     def get_client_addr(self) -> str:
         """Return the URI queries should be submitted to."""

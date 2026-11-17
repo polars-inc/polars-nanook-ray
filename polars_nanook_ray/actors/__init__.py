@@ -1,5 +1,6 @@
 from polars_nanook_ray.actors.pool import (
     NoRoomForWorkers,
+    WorkerPool,
     WorkerSlot,
 )
 from polars_nanook_ray.actors.scaler import (
@@ -24,6 +25,7 @@ __all__ = [
     "PolarsSchedulerActor",
     "PolarsWorkerActor",
     "RayWorkers",
+    "WorkerPool",
     "WorkerSlot",
     "resolve_actor_handles",
     "resolve_scaler_name",
