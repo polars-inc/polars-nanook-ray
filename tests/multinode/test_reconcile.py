@@ -108,3 +108,15 @@ def test_stop_leaves_no_workers_behind(
     time.sleep(3 * config.worker_reconcile_interval)
 
     assert list_workers(config.cluster_id) == set()
+
+
+def test_stop_without_a_scheduler_leaves_no_workers_behind(
+    config: PolarsRayClusterConfig, scheduler: ActorHandle
+) -> None:
+    ray.get(scheduler.get_host.remote())
+    wait_for_workers(config.cluster_id, 2)
+    ray.kill(scheduler, no_restart=True)
+
+    PolarsRayCluster(config).stop()
+
+    assert list_workers(config.cluster_id) == set()

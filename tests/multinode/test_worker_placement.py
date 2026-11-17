@@ -14,7 +14,7 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from polars_nanook_ray.cluster import PolarsRayCluster
 from polars_nanook_ray.config import PolarsRayClusterConfig
-from polars_nanook_ray.identity import WorkerId, list_workers
+from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
 from .utils import head_cluster, make_config, node_id, run_scheduler, wait_for_workers
 
@@ -163,3 +163,5 @@ def test_start_fails_fast_when_a_worker_fits_no_node(
 
     assert time.monotonic() - started < 15
     assert list_workers(config.cluster_id) == set()
+    with pytest.raises(ValueError, match=SCHEDULER.actor_name):
+        ray.get_actor(SCHEDULER.actor_name, namespace=config.cluster_id)
