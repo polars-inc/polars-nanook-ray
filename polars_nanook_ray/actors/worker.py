@@ -3,8 +3,9 @@ import os
 import typing
 
 import ray
+from ray.exceptions import ActorDiedError, ActorUnavailableError
 
-from polars_nanook_ray.actors.pool import Node
+from polars_nanook_ray.actors.pool import Node, WorkerExited
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
@@ -25,6 +26,9 @@ if typing.TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# a worker still starting answers once it is constructed
+READY_CHECK_TIMEOUT = 2.0
 
 
 @ray.remote
@@ -163,7 +167,54 @@ class RayWorkers:
         logger.info("Requested worker %s", worker)
 
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
-        actors = resolve_actor_handles(workers, self._config.cluster_id)
-        terminate_actors(list(actors.values()), self._config.actor_response_timeout)
+        """Stop the workers given; kill those that cannot answer at once.
+
+        A worker waiting for room on a node never answers.
+        """
+        actors = list(resolve_actor_handles(workers, self._config.cluster_id).values())
+        if not actors:
+            return
+        checks: dict[ray.ObjectRef[None], ActorHandle] = {
+            actor.__ray_ready__.remote(): actor for actor in actors
+        }
+        answered, _ = ray.wait(
+            list(checks), num_returns=len(checks), timeout=READY_CHECK_TIMEOUT
+        )
+        placed = [checks[check] for check in answered]
+        terminate_actors(placed, self._config.actor_response_timeout)
+        for actor in actors:
+            ray.kill(actor)
         for worker in workers:
             self._started.pop(worker, None)
+
+    def ready(self, workers: typing.Collection[WorkerId]) -> set[WorkerId]:
+        handles = {w: h for w in workers if (h := self._started.get(w)) is not None}
+        handles |= resolve_actor_handles(
+            set(workers) - set(handles), self._config.cluster_id
+        )
+        if not handles:
+            return set()
+
+        checks: dict[WorkerId, ray.ObjectRef[bool]] = {
+            worker: handle.is_ready.remote() for worker, handle in handles.items()
+        }
+        answered, _ = ray.wait(
+            list(checks.values()), num_returns=len(checks), timeout=READY_CHECK_TIMEOUT
+        )
+
+        ready: set[WorkerId] = set()
+        for worker, check in checks.items():
+            if check not in answered:
+                continue
+            try:
+                if ray.get(check):
+                    ready.add(worker)
+            except ActorUnavailableError:  # Ray is restarting it: not ready yet
+                continue
+            except ActorDiedError as exc:
+                msg = (
+                    f"{worker} exited while starting, past its restart limit; see its "
+                    f"actor's log for the engine's error\n{exc}"
+                )
+                raise WorkerExited(msg) from exc
+        return ready

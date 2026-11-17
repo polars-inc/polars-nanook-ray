@@ -7,6 +7,7 @@ import pytest
 from polars_nanook_ray.actors.pool import (
     Node,
     NoRoomForWorkers,
+    WorkerExited,
     WorkerPool,
 )
 from polars_nanook_ray.config import (
@@ -28,12 +29,14 @@ class InMemoryWorkers:
     """Named worker actors, as Ray holds them, on nodes Ray places them on.
 
     A started worker is listed at once, as a named actor is, even while it waits for
-    room on a node.
+    room on a node; it is ready once it listens.
     """
 
     def __init__(self, *nodes: Node) -> None:
         self.alive_nodes = list(nodes) or [Node(cpus=64, memory=256 * GIB)]
         self.workers: set[WorkerId] = set()
+        self.listening: set[WorkerId] = set()
+        self.exited: set[WorkerId] = set()  # past their restart limit
 
     def nodes(self) -> list[Node]:
         return self.alive_nodes
@@ -46,6 +49,12 @@ class InMemoryWorkers:
 
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
         self.workers.difference_update(workers)
+
+    def ready(self, workers: typing.Collection[WorkerId]) -> set[WorkerId]:
+        if exited := sorted(self.exited.intersection(workers)):
+            msg = f"{exited[0]} exited while starting"
+            raise WorkerExited(msg)
+        return self.listening.intersection(workers)
 
     def kill(self, worker: WorkerId) -> None:
         """Remove `worker` as Ray does once it is past its restart limit."""
@@ -141,7 +150,7 @@ def test_ensure_checks_no_room_when_enough_workers_exist() -> None:
 
 
 def test_a_worker_waiting_for_room_counts_as_existing() -> None:
-    workers = InMemoryWorkers()
+    workers = InMemoryWorkers()  # none of the workers listen yet
     worker_pool = pool(workers)
     worker_pool.ensure(2)
 
@@ -381,3 +390,61 @@ def test_ensure_returns_the_workers_it_started_before_they_are_listed() -> None:
     workers.workers = workers_named(0)
 
     assert pool(workers).ensure(2) == workers_named(0, 1)
+
+
+def test_not_ready_names_the_workers_not_listening_yet() -> None:
+    workers = InMemoryWorkers()
+    worker_pool = pool(workers)
+    worker_pool.ensure(2)
+
+    workers.listening.add(WorkerId(0))
+    assert worker_pool.not_ready() == workers_named(1)
+
+    workers.listening.add(WorkerId(1))
+    assert worker_pool.not_ready() == set()
+
+
+def test_not_ready_awaits_the_workers_started_before_they_are_listed() -> None:
+    workers = SlowListing()
+    workers.workers = workers_named(0)
+    workers.listening.add(WorkerId(0))
+    worker_pool = pool(workers)
+
+    worker_pool.ensure(2)
+
+    assert worker_pool.not_ready() == workers_named(1)
+
+
+def test_not_ready_raises_when_a_started_worker_exited() -> None:
+    workers = InMemoryWorkers()
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+
+    workers.kill(WorkerId(0))
+    workers.exited.add(WorkerId(0))
+
+    with pytest.raises(WorkerExited, match="worker-0"):
+        worker_pool.not_ready()
+
+
+def test_not_ready_leaves_a_worker_seen_ready_to_the_reconcile() -> None:
+    workers = InMemoryWorkers()
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+    workers.listening.add(WorkerId(0))
+    worker_pool.not_ready()
+
+    workers.kill(WorkerId(0))
+    workers.exited.add(WorkerId(0))
+
+    assert worker_pool.not_ready() == set()
+
+
+def test_not_ready_forgets_the_workers_stopped() -> None:
+    workers = SlowListing()
+    worker_pool = pool(workers)
+    worker_pool.ensure(1)
+
+    worker_pool.stop()
+
+    assert worker_pool.not_ready() == set()

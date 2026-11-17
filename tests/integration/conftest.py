@@ -24,6 +24,7 @@ from polars_nanook_ray.config import (
     PolarsWorkerConfig,
 )
 from polars_nanook_ray.context import RayClusterContext
+from polars_nanook_ray.identity import WorkerId, list_workers
 
 RayClusterConfigFactory = typing.Callable[..., PolarsRayClusterConfig]
 RayClusterFactory = typing.Callable[..., PolarsRayCluster]
@@ -37,6 +38,15 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+def worker_actors(cluster: PolarsRayCluster) -> dict[WorkerId, typing.Any]:
+    """Return the cluster's live workers, listed from the GCS, with their actors."""
+    namespace = cluster.config.cluster_id
+    return {
+        worker: ray.get_actor(worker.actor_name, namespace=namespace)
+        for worker in sorted(list_workers(namespace))
+    }
 
 
 def _ld_library_path() -> str:
@@ -178,7 +188,7 @@ def run_query() -> TestQuery:
         max_workers: int | None = None,
     ) -> pl.DataFrame | None:
         if cluster is not None:
-            ctx = pn.ClusterContext(uri=f"http://{cluster.get_client_addr()}")
+            ctx = pn.ClusterContext(uri=cluster._endpoints().client)
         elif context is not None:
             ctx = context
         else:

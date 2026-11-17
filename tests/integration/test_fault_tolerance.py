@@ -11,7 +11,7 @@ from ray.util.state import list_actors
 
 from polars_nanook_ray.identity import SCHEDULER
 
-from .conftest import RayClusterFactory, TestQuery
+from .conftest import RayClusterFactory, TestQuery, worker_actors
 
 
 def _actor_pid(cluster_id: str, name: str) -> int:
@@ -61,7 +61,7 @@ def test_worker_restart_cleanup(
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
 
-    worker, actor = next(iter(cluster._worker_actors.items()))
+    ((worker, actor),) = worker_actors(cluster).items()
     name = worker.actor_name
     actor_pid = _actor_pid(cluster_id, name)
     binary_pid = ray.get(actor.get_worker_pid.remote())
@@ -94,7 +94,7 @@ def test_worker_binary_death_restarts_its_actor(
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
 
-    worker, actor = next(iter(cluster._worker_actors.items()))
+    ((worker, actor),) = worker_actors(cluster).items()
     name = worker.actor_name
     actor_pid = _actor_pid(cluster_id, name)
     binary_pid = ray.get(actor.get_worker_pid.remote())

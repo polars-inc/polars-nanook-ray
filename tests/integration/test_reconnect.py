@@ -66,7 +66,6 @@ def test_reconnect_after_upscale_keeps_workers(
         cluster1.start()
 
         assert list_workers(config.cluster_id) == workers0
-        assert set(cluster1._worker_actors) == workers0
 
         cluster1.stop()
     finally:

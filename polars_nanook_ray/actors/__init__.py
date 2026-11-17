@@ -1,5 +1,6 @@
 from polars_nanook_ray.actors.pool import (
     NoRoomForWorkers,
+    WorkerExited,
     WorkerPool,
 )
 from polars_nanook_ray.actors.scaler import (
@@ -7,7 +8,7 @@ from polars_nanook_ray.actors.scaler import (
     PolarsScalerActor,
     resolve_scaler_name,
 )
-from polars_nanook_ray.actors.scheduler import PolarsSchedulerActor
+from polars_nanook_ray.actors.scheduler import Endpoints, PolarsSchedulerActor
 from polars_nanook_ray.actors.utils import (
     resolve_actor_handles,
     terminate_actors,
@@ -19,11 +20,13 @@ from polars_nanook_ray.actors.worker import (
 
 __all__ = [
     "SCALER_NAME_PREFIX",
+    "Endpoints",
     "NoRoomForWorkers",
     "PolarsScalerActor",
     "PolarsSchedulerActor",
     "PolarsWorkerActor",
     "RayWorkers",
+    "WorkerExited",
     "WorkerPool",
     "resolve_actor_handles",
     "resolve_scaler_name",

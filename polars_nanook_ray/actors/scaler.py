@@ -193,3 +193,7 @@ class PolarsScalerActor:
     def is_ready(self) -> bool:
         """Return whether the HTTP server is listening."""
         return self._http_server is not None
+
+    def not_ready(self) -> list[str]:
+        """Return the scaler until its HTTP server is listening."""
+        return [] if self.is_ready() else [resolve_scaler_name()]
