@@ -19,15 +19,8 @@ It will also install `ray`, and `polars-nanook-compute` which runs the scheduler
 and workers, as dependencies. The latter pins the Polars version of the
 environment, and is only installed on Linux, the only platform it is released
 for: the Ray nodes running the scheduler and workers need to be Linux hosts.
-Note that a few things need to be set up for the Polars Nanook cluster to
-function properly:
 
-```sh
-# need to match the config if manually changed
-mkdir --parents /tmp/polars/{anonymous-results,license,observatory,shuffle-data,temporary-data}
-```
-
-This latter can be started using the following command:
+Start a Ray head node:
 
 ```sh
 ray start \
@@ -38,92 +31,21 @@ ray start \
   --ray-client-server-port="10001"
 ```
 
-The scheduler runs on the Ray head node by default,
-pinned with Ray's built-in `node:__internal_head__` resource; no custom resource is
-needed. It requests no CPUs by default, so a head node started with `--num-cpus=0`
-works too.
-
-To pin it to another node, give that node a custom resource, for example
-`ray start --resources='{"scheduler_node": 1}'`, and set
-`PolarsSchedulerConfig(placement_resource="scheduler_node")`.
-`placement_resource=None` lets Ray place the scheduler on any node that fits its
-`cpus_hint` and `memory_hint`.
-
-If you do not already have one, create a Polars Nanook service account through the
-[Polars Nanook portal](https://nanook.pola.rs/api/redirects/register).
-
-Spawn a local multinode cluster:
-
-```py
-import polars as pl
-import polars_nanook as pn
-import ray
-
-from polars_nanook_ray.cluster import PolarsRayCluster
-from polars_nanook_ray.config import (
-    PolarsObservatoryConfig,
-    PolarsRayClusterConfig,
-    PolarsSchedulerConfig,
-    PolarsServiceAccountLicenseConfig,
-    PolarsWorkerConfig,
-)
-
-config = PolarsRayClusterConfig(
-    num_workers=4,
-    license=PolarsServiceAccountLicenseConfig(
-        workspace_id="<WORKSPACE_ID>",
-        client_id="<SERVICE_ACCOUNT_ID>",
-        client_secret="<SERVICE_ACCOUNT_SECRET>",
-    ),
-    scheduler=PolarsSchedulerConfig(...),
-    worker=PolarsWorkerConfig(...),
-)
-
-ray.init(address="auto", namespace=config.cluster_id)
-cluster = PolarsRayCluster(config)
-cluster.start()
-
-print(
-    pl.LazyFrame({"a": [1, 2, 3], "b": [4, 4, 5]})
-    .with_columns(pl.col("a").max().over("b").alias("c"))
-    .remote(pn.ClusterContext(uri=f"http://{cluster.get_client_addr()}"))
-    .execute()
-    .head
-)
-
-cluster.stop()
-ray.shutdown()
-```
-
-or:
+Then start a cluster of four workers on this host and run a query on it:
 
 ```py
 import polars as pl
 import ray
 
-from polars_nanook_ray.config import (
-    PolarsObservatoryConfig,
-    PolarsRayClusterConfig,
-    PolarsSchedulerConfig,
-    PolarsServiceAccountLicenseConfig,
-    PolarsWorkerConfig,
-)
-from polars_nanook_ray.context import RayClusterContext
+from polars_nanook_ray import RayClusterContext
 
-config = PolarsRayClusterConfig(
-    num_workers=4,
-    license=PolarsServiceAccountLicenseConfig(
-        workspace_id="<WORKSPACE_ID>",
-        client_id="<SERVICE_ACCOUNT_ID>",
-        client_secret="<SERVICE_ACCOUNT_SECRET>",
-    ),
-    scheduler=PolarsSchedulerConfig(...),
-    worker=PolarsWorkerConfig(...),
-)
+ray.init(address="auto")
 
-ray.init(address="auto", namespace=config.cluster_id)
-
-with RayClusterContext(config) as ctx:
+with RayClusterContext(
+    license="/path/to/license.json",
+    accept_eula=True,
+    workers=4,  # 1 CPU and 2 GiB each: Ray places them where they fit
+) as ctx:
     print(
         pl.LazyFrame({"a": [1, 2, 3], "b": [4, 4, 5]})
         .with_columns(pl.col("a").max().over("b").alias("c"))
@@ -135,46 +57,198 @@ with RayClusterContext(config) as ctx:
 ray.shutdown()
 ```
 
-Each worker picks free ports on its node, so several workers can share a host.
-To fix them instead, for firewall rules, set `task_port` and `shuffle_port` on
-`PolarsWorkerConfig`. Ray spreads the workers over the nodes as best it can, but
-may still put two on one node; with fixed ports the second then fails to start,
-with a `PortInUseError`. Leave them unset unless every node has room for one
-worker only.
+`RayClusterContext` takes keyword arguments only, and checks them all when it is
+built, without touching Ray. A bad value raises a `ValueError` that names the
+keyword. Entering the `with` block starts the cluster and waits until it is ready;
+leaving it stops the cluster. `ctx.start()` and `ctx.stop()` do the same without a
+`with` block.
+
+`name` (default `"polars-nanook"`) is the cluster ID and the Ray namespace of its
+actors. The package passes the namespace to every Ray call itself, so
+`ray.init(address="auto")` needs none. Use a different `name` per cluster to run
+several on one Ray cluster.
+
+The package creates the local directories the engines need, such as
+`/tmp/polars/...`, on each node before starting them.
+
+`ctx.client_addr` is the URL queries are sent to, for example
+`http://10.0.0.5:5051`. `ctx.dashboard_addr` is the URL of the observatory
+dashboard, or `None` with `observatory=False`. Both raise while the cluster is not
+running.
+
+## License
+
+`license` is required. It takes one of:
+
+- a path to a license file, such as `"/etc/polars/license.json"`;
+- the URI of a Polars Nanook license server, such as
+  `"https://license-server.example.com:50051"`;
+- a service account, to validate the license online:
+
+```py
+from polars_nanook_ray import ServiceAccount
+
+license = ServiceAccount(
+    workspace_id="<WORKSPACE_ID>",
+    client_id="<SERVICE_ACCOUNT_ID>",
+    client_secret="<SERVICE_ACCOUNT_SECRET>",
+)
+```
+
+The secret does not show in reprs or logs. If you do not already have a service
+account, create one through the
+[Polars Nanook portal](https://nanook.pola.rs/api/redirects/register).
+
+With a license server, the scheduler and the workers register with it. This
+package does not run the license server: deploy it as its own service, outside
+Ray, and start it before any cluster that points at it.
+
+Set `accept_eula=True` to accept the Polars EULA.
+
+## Storage
+
+`shuffle_data`, `anonymous_results` and `checkpoints` each take a URL or an
+absolute path. The scheme picks the backend:
+
+- `s3://` or `s3a://`: S3
+- `gs://` or `gcs://`: Google Cloud Storage
+- `az://`, `azure://`, `abfs://` or `abfss://`: Azure Blob Storage
+- no scheme: a path on the local disk of each node
+
+```py
+RayClusterContext(
+    license="/path/to/license.json",
+    shuffle_data="s3://bucket/shuffle",
+    anonymous_results="s3://bucket/results",
+    checkpoints="s3://bucket/checkpoints",  # turns checkpointing on
+)
+```
+
+Use `Storage` for credentials, other object store options, or an S3-compatible
+endpoint such as MinIO:
+
+```py
+from polars_nanook_ray import Storage
+
+shuffle_data = Storage(
+    "s3://bucket/shuffle",
+    options={"aws_region": "eu-west-1"},
+    endpoint="http://minio:9000",
+)
+```
+
+For a filesystem mounted at the same path on every node, such as NFS, use
+`Storage("/mnt/nfs/shuffle", shared=True)`.
+
+`shuffle_data` and `anonymous_results` default to `/tmp/polars/shuffle-data` and
+`/tmp/polars/anonymous-results`. Checkpointing is off by default. `spill_dir`
+(default `/tmp/polars/temporary-data`) is where Polars spills to disk on each
+worker.
+
+## Ports and firewalls
+
+Every port the engines listen on is set in one place, `ports`:
+
+```py
+from polars_nanook_ray import Ports
+
+ports = Ports(
+    client=5051,        # scheduler: query submission
+    dashboard=3001,     # scheduler: observatory dashboard and REST API
+    registration=5050,  # scheduler: workers register here
+    telemetry=5049,     # scheduler: OpenTelemetry traces and metrics
+    task=5052,          # each worker: tasks from the scheduler
+    shuffle=5053,       # each worker: shuffle data from other workers
+)
+```
+
+A port left at `None` is picked free on its node. By default only the client port
+(5051) and the dashboard (3001) are fixed, as `polars_nanook` expects; all others
+are free, so several workers and clusters can share a host. Ray spreads the
+workers over the nodes as best it can, but may still put two on one node; with
+fixed `task` or `shuffle` ports the second then fails to start, with a
+`PortInUseError`. Leave those two unset unless every node has room for one worker
+only.
+
+`tls=Tls(cert_file=..., key_file=...)` serves the client port and the dashboard
+over TLS. `auth=Jwks(url=..., issuer=..., audience=...)` makes both require a JWT
+validated against that JWKS endpoint. `require_user=True` rejects anonymous
+queries, and `allow_local_io=False` stops scans and sinks on local disk.
 
 ## Worker placement
 
 Ray places the workers, as it does Spark executors in RayDP: each worker actor
-requests `cpus_hint` and `memory_hint` and uses Ray's `SPREAD` scheduling
-strategy, without pinning to a node. Ray puts it on a node with that much free,
-taking the nodes in turn; this is best-effort, and a node with room for several
-may get several, and nodes without CPUs, like a head started with
-`--num-cpus=0`, get none unless `cpus_hint=0`. Nodes are listed with
-`ray.nodes()`, so neither `start()` nor `stop()` needs the Ray dashboard.
+requests `cpus` and `memory` and uses Ray's `SPREAD` scheduling strategy, without
+pinning to a node. Ray puts it on a node with that much free, taking the nodes in
+turn; this is best-effort, and a node with room for several may get several, and nodes without CPUs,
+like a head started with `--num-cpus=0`, get none unless `cpus=0`.
 
 A worker for which no node has room yet waits, as Ray demand: Ray's autoscaler, if
 the Ray cluster has one, adds a node for it. It counts as one of the cluster's
 workers meanwhile, and `start()` reports it if it is still waiting at
 `startup_timeout`. Only a worker larger than every alive node fails `start()` right
-away, naming the request and the largest node.
+away, naming the request and the largest node, and stopping what it started.
 
 Workers are named by index, `worker-0`, `worker-1`, ..., each new one taking the
 lowest free index; the name says nothing of the node. Starting a worker whose name
 is taken returns the existing one, so repeated scale-ups and reconnects never add
-workers: `start()` only tops the pool up to `num_workers`. Each start of a worker's
+workers: `start()` only tops the pool up to `workers`. Each start of a worker's
 engine registers with the scheduler under a new instance ID, e.g.
 `worker-0-1a2b3c4d`.
 
-The scheduler actor is running in `detached` mode and survives past the
-script: one can reconnect with the same `ray.init()` and `cluster` gymnastics from
-another process. The workers belong to the scheduler actor: they stop when it does, and
-a restarted scheduler starts new ones.
+## Scheduler placement
 
-The actors log to their Ray logs at INFO, or at the level the `LOGLEVEL` environment
-variable sets. Importing the package leaves your own process's logging alone: to see the
-cluster's progress messages in your script, set up logging there, for example with
-`logging.basicConfig(level=logging.INFO)`.
-To clean all actors and underlying processes, Ray itself needs to be shutdown
+The scheduler runs on the Ray head node by default, pinned with Ray's built-in
+`node:__internal_head__` resource; no custom resource is needed. It requests no
+CPUs, so a head node started with `--num-cpus=0` works too.
+
+To pin it to another node, give that node a custom resource, for example
+`ray start --resources='{"scheduler_node": 1}'`, and set
+`scheduler_resource="scheduler_node"`. `scheduler_resource=None` lets Ray place
+the scheduler on any node.
+
+## Lifetime and reconnecting
+
+The scheduler actor runs in `detached` mode and outlives the script that started
+it. The workers belong to the scheduler actor: they stop when it does, and a
+restarted scheduler starts new ones. `worker_max_restarts` and
+`scheduler_max_restarts` (default `3` each) bound how often Ray restarts them; Ray
+restarts a worker whose node is lost on another node. Every `reconcile_interval`
+seconds (default `10`, `0` turns it off) the scheduler starts workers up to its
+target count, replacing those past their restart limit. `startup_timeout` (default `30` seconds) bounds how long
+`start()` waits for the engines.
+
+To attach to a running cluster from another script, connect by name:
+
+```py
+import ray
+
+from polars_nanook_ray import RayClusterContext
+
+ray.init(address="auto")
+ctx = RayClusterContext.connect("polars-nanook")
+print(ctx.client_addr)
+ctx.stop()
+```
+
+`connect()` reads the cluster's settings back from its scheduler, so you do not
+repeat them, and raises if no cluster of that name runs. Calling `start()` on a
+context whose cluster already runs reconnects to it and only tops the workers up.
+
+## Logging
+
+The actors log to their Ray logs at INFO, or at the level the `LOGLEVEL`
+environment variable sets. Importing the package leaves your own process's
+logging alone: to see the cluster's progress messages in your script, set up
+logging there, for example with `logging.basicConfig(level=logging.INFO)`.
+
+`log_level` (`"info"`, `"debug"` or `"trace"`) sets the engines' own log level.
+`env_vars` sets environment variables of every engine process, and so of their
+query executors. `observatory=False` turns off the dashboard, `host_metrics=False`
+turns off host metrics, and `lineage` sends lineage events to `"stdout"`,
+`"stderr"` or an `https://` endpoint.
+
+To clean all actors and underlying processes, Ray itself needs to be shut down
 using the following command:
 
 ```sh
@@ -183,65 +257,102 @@ ray stop --force
 
 ## Autoscaling
 
-The scheduler actor runs an HTTP server to handle scaling requests sent by the
-underlying binary, and adds or removes Ray worker actors in response.
+With `autoscale=True`, the scheduler actor runs an HTTP server to handle scaling
+requests sent by the engine, and adds or removes Ray worker actors in response.
+`min_workers` and `max_workers` bound how far it may scale; setting them without
+`autoscale=True` is an error.
 
-Enable it via `PolarsScalingConfig` on the scheduler, and optionally set
-`min_workers` and/or `max_workers` on the cluster config to bound how far it may
-scale.
-Note the cluster always _starts_ `num_workers` workers: the bounds are reported
-back to the binary on `GET /scale_config`, seeded into `max_workers_per_query`,
-and only enforced on rescaling, where a `POST /scale_to` count outside them is
-clamped.
-A scale-down that names no workers to keep or delete removes the highest indices
+The cluster always _starts_ `workers` workers: the bounds are reported back to the
+engine on `GET /scale_config`, seeded into the per-query limits, and only enforced
+on rescaling, where a `POST /scale_to` count outside them is clamped. A
+scale-down that names no workers to keep or delete removes the highest indices
 first. A scale-up starts workers whether or not a node has room for them yet, so
-an autoscaling Ray cluster grows with the engine's requests.
-Requesting more workers is done via the client: `.distributed(min_workers=X)`.
+an autoscaling Ray cluster grows with the engine's requests. Requesting more
+workers is done via the client: `.distributed(min_workers=X)`.
 
-The HTTP server is unauthenticated and binds `127.0.0.1`. It accepts only
-`application/json` bodies, and ignores worker names that are not worker actors.
+The HTTP server is unauthenticated, binds a free port on `127.0.0.1`, and is only
+used by the engine. It accepts only `application/json` bodies, and ignores worker
+names that are not worker actors.
 
 > [!NOTE]
-> Avoid leaving `default_workers_per_query` at `1` if you want queries to ever
-> trigger a scale-up.
->
 > A query that does not request a worker count is capped at
-> `default_workers_per_query`, which this package seeds from `num_workers`, then
-> `min_workers`, then `1` when autoscaling is enabled. Set it explicitly on
-> `PolarsSchedulerConfig`, or request workers per query via
-> `.distributed(min_workers=X)`, to scale past it. `max_workers_per_query` bounds
-> what any single query may claim, and is seeded from `max_workers`, then
-> `num_workers`.
-
-## License server
-
-To validate the license against a Polars Nanook license server, point the
-cluster at it:
+> `default_workers_per_query`, which this package sets to `workers`.
+> `max_workers_per_query` bounds what any single query may claim, and is set to
+> `max_workers`, or `workers` without it. To let queries trigger a scale-up,
+> request workers per query via `.distributed(min_workers=X)`, or raise the
+> default through `scheduler_overrides`:
+>
+> ```py
+> scheduler_overrides={"scheduler": {"default_workers_per_query": 8}}
+> ```
 
 ```py
-from polars_nanook_ray.config import PolarsLicenseServerConfig
-
-license = PolarsLicenseServerConfig(uri="https://license-server.example.com:50051")
+RayClusterContext(
+    license="/path/to/license.json",
+    workers=2,
+    autoscale=True,
+    min_workers=1,
+    max_workers=16,
+)
 ```
-
-The scheduler and the workers register with it. This package does not run the
-license server: deploy it as its own service, outside Ray, and start it before
-any cluster that points at it.
 
 ## Resource requests and limits
 
-Four parameters control resource usage:
+Three keywords control resource usage per worker:
 
-- `cpus_hint` / `memory_hint`: forwarded verbatim as Ray's own `num_cpus` /
-  `memory` actor options, and used by Ray for bin-packing. Not enforced at the
-  OS level.
-- `cpu_reserved`: a scheduling/accounting hint consumed internally by the binary
-  for task placement and reported to the observatory; never enforced.
-- `memory_limit`: enforced by the binary itself via cgroups; but only if a
-  _delegated cgroup subtree is made available_.
+- `cpus` (default `1`) and `memory` (default `2`, in GiB): Ray's `num_cpus` and
+  `memory` actor options, used by Ray for bin-packing. `cpus` is also the engine's
+  CPU reservation, a hint for task placement reported to the observatory. Neither
+  is enforced at the OS level.
+- `enforce_memory_limit=True`: the engine also caps itself at `memory` through
+  cgroups, but only if a _delegated cgroup subtree is made available_.
 
 A plain session/SSH shell does not provide one (everything lives flatly in one
-cgroup), so `memory_limit` fails outright with the following message:
+cgroup), so the memory limit fails outright with the following message:
 
 > Ensure cgroup is mounted and subgroups are delegated, or disable the memory
 > limit in the configuration file.
+
+`binary_path` runs a specific engine binary instead of the one from
+`polars-nanook-compute`.
+
+## Engine overrides and YAML
+
+Engine settings without a keyword stay reachable through `scheduler_overrides`
+and `worker_overrides`. These are merged into the engine's TOML configuration
+last: mappings merge, `None` deletes a key, and any other value replaces it.
+
+```py
+RayClusterContext(
+    license="/path/to/license.json",
+    scheduler_overrides={"scheduler": {"default_partitions_per_worker": 4}},
+    worker_overrides={"worker": {"heartbeat_period": "10s"}},
+)
+```
+
+`license`, the storage keywords, `ports`, `tls` and `auth` also accept plain
+mappings, so a whole cluster can come from a YAML file:
+
+```py
+import yaml
+
+from polars_nanook_ray import RayClusterContext
+
+with open("cluster.yaml") as f:
+    ctx = RayClusterContext(**yaml.safe_load(f))
+```
+
+```yaml
+license: /etc/polars/license.json
+accept_eula: true
+workers: 8
+cpus: 15
+memory: 56
+ports:
+  task: 5052
+  shuffle: 5053
+shuffle_data:
+  url: s3://bucket/shuffle
+  options:
+    aws_region: eu-west-1
+```
