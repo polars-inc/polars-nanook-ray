@@ -2,7 +2,18 @@ import typing
 
 import ray
 
-from polars_nanook_ray.config import HEAD_NODE_RESOURCE
+from polars_nanook_ray._spec import HEAD_NODE_RESOURCE
+
+# the scheduler runs on the head node by default, which often has no CPUs to give
+SCHEDULER_CPUS = 0
+SCHEDULER_MEMORY = 1024**3
+
+
+def scheduler_options(resource: str | None) -> dict[str, typing.Any]:
+    """Ray actor options placing the scheduler on the nodes advertising `resource`."""
+    return placement_options(
+        "scheduler", resource=resource, num_cpus=SCHEDULER_CPUS, memory=SCHEDULER_MEMORY
+    )
 
 
 def placement_options(
@@ -48,7 +59,7 @@ def placement_options(
             )
         msg = (
             f"Cannot place the {name} on {where}: it requests {shortfall}. "
-            "Lower its `cpus_hint` / `memory_hint`."
+            "Free some on that node, or place it elsewhere with `scheduler_resource`."
         )
         raise RuntimeError(msg)
 

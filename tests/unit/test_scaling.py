@@ -1,5 +1,4 @@
 import json
-import socket
 import threading
 import time
 import typing
@@ -8,15 +7,13 @@ import urllib.request
 
 import pytest
 
+from polars_nanook_ray._spec import ClusterSpec
 from polars_nanook_ray.actors.pool import WorkerPool
-from polars_nanook_ray.actors.scaling import ScalingEndpoint, serve_scaling
-from polars_nanook_ray.config import (
-    PolarsRayClusterConfig,
-    PolarsScalingConfig,
-    PolarsSchedulerConfig,
-)
+from polars_nanook_ray.actors.scaling import serve_scaling
 from polars_nanook_ray.identity import WorkerId
-from polars_nanook_ray.ports import PortInUseError, resolve_ports
+
+if typing.TYPE_CHECKING:
+    from polars_nanook_ray.actors.scaling import ScalingEndpoint
 
 from .test_pool import InMemoryWorkers, config
 
@@ -31,20 +28,17 @@ def workers() -> InMemoryWorkers:
     return InMemoryWorkers()
 
 
-@pytest.fixture
-def port() -> int:
-    return resolve_ports({"scaling.port": None})["scaling.port"]
+Serve = typing.Callable[[WorkerPool, ClusterSpec], int]
 
 
 @pytest.fixture
-def serve() -> typing.Iterator[typing.Callable[..., ScalingEndpoint]]:
+def serve() -> typing.Iterator[Serve]:
+    """Serve scaling requests; return the port served on."""
     endpoints: list[ScalingEndpoint] = []
 
-    def _serve(
-        worker_pool: WorkerPool, cluster: PolarsRayClusterConfig
-    ) -> ScalingEndpoint:
+    def _serve(worker_pool: WorkerPool, cluster: ClusterSpec) -> int:
         endpoints.append(serve_scaling(worker_pool, cluster))
-        return endpoints[-1]
+        return endpoints[-1].port
 
     yield _serve
 
@@ -52,13 +46,8 @@ def serve() -> typing.Iterator[typing.Callable[..., ScalingEndpoint]]:
         endpoint.close()
 
 
-def scaling_config(port: int, **kwargs: typing.Any) -> PolarsRayClusterConfig:
-    return config(
-        scheduler=PolarsSchedulerConfig(
-            scaling=PolarsScalingConfig(enabled=True, port=port)
-        ),
-        **kwargs,
-    )
+def scaling_config(**bounds: typing.Any) -> ClusterSpec:
+    return config(autoscale=bounds)
 
 
 def request(
@@ -85,12 +74,12 @@ def request(
 
 
 def test_scale_config_reports_the_pool_and_its_bounds(
-    workers: InMemoryWorkers, port: int, serve: typing.Callable[..., ScalingEndpoint]
+    workers: InMemoryWorkers, serve: Serve
 ) -> None:
-    cluster = scaling_config(port, min_workers=1, max_workers=8)
+    cluster = scaling_config(min_workers=1, max_workers=8)
     worker_pool = WorkerPool(workers, cluster, 0)
     worker_pool.ensure(2)
-    serve(worker_pool, cluster)
+    port = serve(worker_pool, cluster)
 
     assert request(port, "GET", "/scale_config") == (
         200,
@@ -119,17 +108,16 @@ class FailingWorkers(InMemoryWorkers):
 
 
 @pytest.fixture
-def cluster(port: int) -> PolarsRayClusterConfig:
-    return scaling_config(port)
+def cluster() -> ClusterSpec:
+    return scaling_config()
 
 
 def test_scale_config_reports_an_unbounded_max_as_null(
     workers: InMemoryWorkers,
-    cluster: PolarsRayClusterConfig,
-    port: int,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
 ) -> None:
-    serve(WorkerPool(workers, cluster, 0), cluster)
+    port = serve(WorkerPool(workers, cluster, 0), cluster)
 
     assert request(port, "GET", "/scale_config") == (
         200,
@@ -139,11 +127,10 @@ def test_scale_config_reports_an_unbounded_max_as_null(
 
 def test_scale_to_starts_workers(
     workers: InMemoryWorkers,
-    cluster: PolarsRayClusterConfig,
-    port: int,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
 ) -> None:
-    serve(WorkerPool(workers, cluster, 0), cluster)
+    port = serve(WorkerPool(workers, cluster, 0), cluster)
 
     assert request(port, "POST", "/scale_to", {"amount": 2}) == (204, None)
     assert workers.running() == {WorkerId(0), WorkerId(1)}
@@ -151,10 +138,10 @@ def test_scale_to_starts_workers(
 
 
 def test_scale_to_is_clamped_to_the_bounds(
-    workers: InMemoryWorkers, port: int, serve: typing.Callable[..., ScalingEndpoint]
+    workers: InMemoryWorkers, serve: Serve
 ) -> None:
-    cluster = scaling_config(port, max_workers=1)
-    serve(WorkerPool(workers, cluster, 0), cluster)
+    cluster = scaling_config(max_workers=1)
+    port = serve(WorkerPool(workers, cluster, 0), cluster)
 
     assert request(port, "POST", "/scale_to", {"amount": 3}).status == 204
     assert workers.running() == {WorkerId(0)}
@@ -162,13 +149,12 @@ def test_scale_to_is_clamped_to_the_bounds(
 
 def test_scale_to_deletes_the_workers_named(
     workers: InMemoryWorkers,
-    cluster: PolarsRayClusterConfig,
-    port: int,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
 ) -> None:
     worker_pool = WorkerPool(workers, cluster, 0)
     worker_pool.ensure(3)
-    serve(worker_pool, cluster)
+    port = serve(worker_pool, cluster)
 
     body = {"amount": 2, "workers_to_delete": [WorkerId(0).actor_name]}
 
@@ -178,13 +164,12 @@ def test_scale_to_deletes_the_workers_named(
 
 def test_scale_to_keeps_the_workers_named(
     workers: InMemoryWorkers,
-    cluster: PolarsRayClusterConfig,
-    port: int,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
 ) -> None:
     worker_pool = WorkerPool(workers, cluster, 0)
     worker_pool.ensure(3)
-    serve(worker_pool, cluster)
+    port = serve(worker_pool, cluster)
 
     body = {"amount": 1, "workers_to_keep": [WorkerId(2).actor_name]}
 
@@ -198,12 +183,11 @@ def test_scale_to_keeps_the_workers_named(
 )
 def test_invalid_scale_to_is_rejected(
     workers: InMemoryWorkers,
-    cluster: PolarsRayClusterConfig,
-    port: int,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
     body: dict,
 ) -> None:
-    serve(WorkerPool(workers, cluster, 0), cluster)
+    port = serve(WorkerPool(workers, cluster, 0), cluster)
 
     response = request(port, "POST", "/scale_to", body)
 
@@ -214,11 +198,10 @@ def test_invalid_scale_to_is_rejected(
 
 def test_non_json_scale_to_is_unsupported(
     workers: InMemoryWorkers,
-    cluster: PolarsRayClusterConfig,
-    port: int,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
 ) -> None:
-    serve(WorkerPool(workers, cluster, 0), cluster)
+    port = serve(WorkerPool(workers, cluster, 0), cluster)
 
     response = request(port, "POST", "/scale_to", {"amount": 1}, "text/plain")
 
@@ -228,26 +211,24 @@ def test_non_json_scale_to_is_unsupported(
 @pytest.mark.parametrize(("method", "path"), [("GET", "/scale_to"), ("POST", "/nope")])
 def test_other_paths_are_not_found(
     workers: InMemoryWorkers,
-    cluster: PolarsRayClusterConfig,
-    port: int,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
     method: str,
     path: str,
 ) -> None:
-    serve(WorkerPool(workers, cluster, 0), cluster)
+    port = serve(WorkerPool(workers, cluster, 0), cluster)
 
     assert request(port, method, path, {"amount": 1}) == (404, {"detail": "not found"})
 
 
 def test_a_failed_rescale_is_a_server_error(
-    port: int,
-    cluster: PolarsRayClusterConfig,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
 ) -> None:
     workers = FailingWorkers()
     worker_pool = WorkerPool(workers, cluster, 0)
     worker_pool.ensure(1)
-    serve(worker_pool, cluster)
+    port = serve(worker_pool, cluster)
 
     assert request(port, "POST", "/scale_to", {"amount": 0}) == (
         500,
@@ -256,14 +237,13 @@ def test_a_failed_rescale_is_a_server_error(
 
 
 def test_scale_config_is_answered_during_a_slow_scale_down(
-    port: int,
-    cluster: PolarsRayClusterConfig,
-    serve: typing.Callable[..., ScalingEndpoint],
+    cluster: ClusterSpec,
+    serve: Serve,
 ) -> None:
     workers = StuckWorkers()
     worker_pool = WorkerPool(workers, cluster, 0)
     worker_pool.ensure(2)
-    serve(worker_pool, cluster)
+    port = serve(worker_pool, cluster)
 
     scale_down = threading.Thread(
         target=request, args=(port, "POST", "/scale_to", {"amount": 0})
@@ -283,49 +263,38 @@ def test_scale_config_is_answered_during_a_slow_scale_down(
         scale_down.join(10)
 
 
-def test_a_taken_port_is_reported(
-    workers: InMemoryWorkers, cluster: PolarsRayClusterConfig, port: int
-) -> None:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", port))
-        listener.listen()
-
-        with pytest.raises(PortInUseError, match=rf"scaling.port {port} .*in use"):
-            serve_scaling(WorkerPool(workers, cluster, 0), cluster)
-
-
-def test_a_closed_endpoint_frees_its_port_for_the_next_one(
-    workers: InMemoryWorkers, cluster: PolarsRayClusterConfig, port: int
+def test_endpoints_serve_on_distinct_free_ports(
+    workers: InMemoryWorkers, cluster: ClusterSpec, serve: Serve
 ) -> None:
     worker_pool = WorkerPool(workers, cluster, 0)
-    endpoint = serve_scaling(worker_pool, cluster)
-    # the endpoint closes the connection first, which lingers in TIME_WAIT on its port
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as conn:
-        conn.sendall(b"GET /scale_config HTTP/1.0\r\n\r\n")
-        while conn.recv(4096):
-            pass
+
+    ports = {serve(worker_pool, cluster), serve(worker_pool, cluster)}
+
+    assert len(ports) == 2
+    for port in ports:
+        assert request(port, "GET", "/scale_config").status == 200
+
+
+def test_a_closed_endpoint_stops_answering(
+    workers: InMemoryWorkers, cluster: ClusterSpec
+) -> None:
+    endpoint = serve_scaling(WorkerPool(workers, cluster, 0), cluster)
+    assert request(endpoint.port, "GET", "/scale_config").status == 200
+
     endpoint.close()
 
     with pytest.raises(urllib.error.URLError):
-        request(port, "GET", "/scale_config")
-
-    endpoint = serve_scaling(worker_pool, cluster)
-    try:
-        assert request(port, "GET", "/scale_config").status == 200
-    finally:
-        endpoint.close()
+        request(endpoint.port, "GET", "/scale_config")
 
 
-def test_close_twice_and_during_a_slow_request(
-    port: int, cluster: PolarsRayClusterConfig
-) -> None:
+def test_close_twice_and_during_a_slow_request(cluster: ClusterSpec) -> None:
     workers = StuckWorkers()
     worker_pool = WorkerPool(workers, cluster, 0)
     worker_pool.ensure(1)
     endpoint = serve_scaling(worker_pool, cluster)
 
     scale_down = threading.Thread(
-        target=request, args=(port, "POST", "/scale_to", {"amount": 0})
+        target=request, args=(endpoint.port, "POST", "/scale_to", {"amount": 0})
     )
     scale_down.start()
     try:

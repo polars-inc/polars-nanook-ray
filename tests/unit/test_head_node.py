@@ -5,16 +5,9 @@ import pytest
 import ray
 from ray.cluster_utils import Cluster
 
-from polars_nanook_ray.actors.head_node import placement_options
-from polars_nanook_ray.cluster import PolarsRayCluster
-from polars_nanook_ray.config import (
-    HEAD_NODE_RESOURCE,
-    PolarsEnterpriseLicenseConfig,
-    PolarsRayClusterConfig,
-    PolarsScalingConfig,
-    PolarsSchedulerConfig,
-    PolarsWorkerConfig,
-)
+from polars_nanook_ray import Autoscale, RayClusterContext
+from polars_nanook_ray._spec import HEAD_NODE_RESOURCE
+from polars_nanook_ray.actors.head_node import placement_options, scheduler_options
 
 
 @ray.remote
@@ -51,17 +44,10 @@ def _node_of(options: dict[str, typing.Any]) -> str:
         ray.kill(probe)
 
 
-def _cluster_config(**scheduler: typing.Any) -> PolarsRayClusterConfig:
-    return PolarsRayClusterConfig(
-        cluster_id="head-node-test",
-        license=PolarsEnterpriseLicenseConfig(license_path="/dev/null"),
-        scheduler=PolarsSchedulerConfig(**scheduler),
-        worker=PolarsWorkerConfig(),
-    )
-
-
 def test_default_resource_is_the_head_node() -> None:
-    assert PolarsSchedulerConfig().placement_resource == HEAD_NODE_RESOURCE
+    ctx = RayClusterContext(license="/dev/null")
+
+    assert ctx._spec.scheduler_resource == HEAD_NODE_RESOURCE
 
 
 def test_actor_lands_on_cpu_less_head(nodes: _Nodes) -> None:
@@ -71,13 +57,7 @@ def test_actor_lands_on_cpu_less_head(nodes: _Nodes) -> None:
 
 
 def test_default_scheduler_fits_cpu_less_head(nodes: _Nodes) -> None:
-    scheduler = PolarsSchedulerConfig()
-    options = placement_options(
-        "scheduler",
-        resource=scheduler.placement_resource,
-        num_cpus=scheduler.cpus_hint,
-        memory=scheduler.memory_hint,
-    )
+    options = scheduler_options(HEAD_NODE_RESOURCE)
 
     assert _node_of(options) == nodes.head
 
@@ -129,30 +109,25 @@ def test_no_resource_still_fails_fast_when_no_node_fits() -> None:
 
 
 @pytest.mark.usefixtures("nodes")
-@pytest.mark.parametrize("scaling", [False, True])
-@pytest.mark.parametrize(
-    ("scheduler", "error"),
-    [
-        ({"cpus_hint": 1}, "scheduler.*1 CPU"),
-        ({"placement_resource": "no_such_node"}, "scheduler.*`no_such_node`"),
-    ],
-)
+@pytest.mark.parametrize("autoscale", [None, Autoscale()])
 def test_cluster_fails_fast_without_creating_actors(
-    scaling: bool, scheduler: dict[str, typing.Any], error: str
+    autoscale: Autoscale | None,
 ) -> None:
-    config = _cluster_config(
-        **scheduler,
-        scaling=PolarsScalingConfig(enabled=scaling),
+    ctx = RayClusterContext(
+        license="/dev/null",
+        name="head-node-test",
+        autoscale=autoscale,
+        scheduler_resource="no_such_node",
     )
 
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match=error):
-        PolarsRayCluster(config).start()
+    with pytest.raises(RuntimeError, match=r"scheduler.*`no_such_node`"):
+        ctx.start()
 
-    assert time.monotonic() - started < config.startup_timeout / 2
+    assert time.monotonic() - started < 15
     # from the GCS: the State API reads the dashboard of the newest cluster on the host
     assert not [
         actor
         for actor in ray.util.list_named_actors(all_namespaces=True)
-        if actor["namespace"] == config.cluster_id
+        if actor["namespace"] == "head-node-test"
     ]

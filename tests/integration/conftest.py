@@ -1,7 +1,5 @@
 import os
-import pathlib
 import shutil
-import socket
 import subprocess
 import sysconfig
 import typing
@@ -12,41 +10,62 @@ import polars_nanook as pn
 import pytest
 import ray
 
-from polars_nanook_ray.cluster import PolarsRayCluster
-from polars_nanook_ray.config import (
-    PolarsEnterpriseLicenseConfig,
-    PolarsLicenseConfig,
-    PolarsMonitoringConfig,
-    PolarsObservatoryConfig,
-    PolarsRayClusterConfig,
-    PolarsScalingConfig,
-    PolarsSchedulerConfig,
-    PolarsWorkerConfig,
-)
-from polars_nanook_ray.context import RayClusterContext
+from polars_nanook_ray import Ports, RayClusterContext
 from polars_nanook_ray.identity import WorkerId, list_workers
 
-RayClusterConfigFactory = typing.Callable[..., PolarsRayClusterConfig]
-RayClusterFactory = typing.Callable[..., PolarsRayCluster]
+ContextFactory = typing.Callable[..., RayClusterContext]
 TestQuery = typing.Callable[..., pl.DataFrame | None]
 
 RAY_GCS_PORT = 6379
 RAY_CLIENT_PORT = 10001
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+def name_of(ctx: RayClusterContext) -> str:
+    return ctx._spec.name
 
 
-def worker_actors(cluster: PolarsRayCluster) -> dict[WorkerId, typing.Any]:
+def scheduler_actor(ctx: RayClusterContext) -> typing.Any:
+    return ctx._scheduler_actor
+
+
+def rescale(
+    ctx: RayClusterContext,
+    num_workers: int,
+    delete: set[str] | None = None,
+    keep: set[str] | None = None,
+) -> None:
+    ray.get(
+        scheduler_actor(ctx).rescale_worker_pool_to.remote(
+            num_workers, delete=delete, keep=keep
+        ),
+        timeout=30,
+    )
+
+
+def worker_actors(ctx: RayClusterContext) -> dict[WorkerId, typing.Any]:
     """Return the cluster's live workers, listed from the GCS, with their actors."""
-    namespace = cluster.config.cluster_id
+    namespace = name_of(ctx)
     return {
         worker: ray.get_actor(worker.actor_name, namespace=namespace)
         for worker in sorted(list_workers(namespace))
     }
+
+
+def make_context(**keywords: typing.Any) -> RayClusterContext:
+    """A context for this machine: free ports, small workers, no observatory."""
+    keywords.setdefault("license", os.environ.get("LICENSE_PATH", "./license.json"))
+    keywords.setdefault("name", f"polars-nanook-{uuid.uuid4().hex[:8]}")
+    keywords.setdefault("binary_path", os.environ.get("BINARY_PATH"))
+    # several workers on one host
+    keywords.setdefault("cpus", 0)
+    keywords.setdefault("memory", 0)
+    keywords.setdefault("observatory", False)
+    no_host_metrics = {"monitoring": {"host_metrics": {"enabled": False}}}
+    keywords.setdefault("scheduler_overrides", no_host_metrics)
+    keywords.setdefault("worker_overrides", no_host_metrics)
+    keywords.setdefault("ports", Ports(client=None, dashboard=None))
+    keywords.setdefault("env_vars", {"POLARS_EULA_ACCEPTED": "yes"})
+    return RayClusterContext(**keywords)
 
 
 def _ld_library_path() -> str:
@@ -71,9 +90,6 @@ def ray_head() -> typing.Iterator[None]:
         msg = "Ray is not installed or not in PATH!"
         raise RuntimeError(msg)
 
-    for name in ("anonymous-results", "shuffle-data", "temporary-data"):
-        pathlib.Path("/tmp/polars", name).mkdir(parents=True, exist_ok=True)
-
     subprocess.run([binary_path, "stop", "--force"], check=False)  # clean slate
 
     subprocess.run(
@@ -95,106 +111,34 @@ def ray_head() -> typing.Iterator[None]:
 
 
 @pytest.fixture
-def ray_cluster(
-    ray_cluster_config: RayClusterConfigFactory,
-) -> typing.Iterator[RayClusterFactory]:
-    started: list[PolarsRayCluster] = []
+def ray_cluster() -> typing.Iterator[ContextFactory]:
+    """Start clusters from `make_context` keywords; stop them after the test."""
+    started: list[RayClusterContext] = []
 
-    def _factory(**kwargs) -> PolarsRayCluster:
-        config = ray_cluster_config(**kwargs)
-        ray.init(address="auto", namespace=config.cluster_id, ignore_reinit_error=True)
-        cluster = PolarsRayCluster(config)
-        started.append(cluster)
-        cluster.start()
-        return cluster
+    def _factory(**keywords: typing.Any) -> RayClusterContext:
+        ctx = make_context(**keywords)
+        ray.init(address="auto", ignore_reinit_error=True)
+        started.append(ctx)
+        ctx.start()
+        return ctx
 
     yield _factory
 
-    for cluster in started:
-        cluster.stop()
+    for ctx in started:
+        ctx.stop()
 
     if ray.is_initialized():
         ray.shutdown()
 
 
 @pytest.fixture
-def ray_cluster_config() -> RayClusterConfigFactory:
-    def _factory(
-        *,
-        # cluster configuration
-        worker_max_restarts: int = 3,
-        # native binary configuration
-        scaling_enabled: bool = False,
-        num_workers: int = 0,
-        min_workers: int = 0,
-        max_workers: int | None = None,
-        license: PolarsLicenseConfig | None = None,
-        scheduler_client_port: int | None = None,
-        worker_task_port: int | None = None,
-    ) -> PolarsRayClusterConfig:
-        cluster_id = f"polars-nanook-{uuid.uuid4().hex[:8]}"
-
-        license_path = str(
-            pathlib.Path(os.environ.get("LICENSE_PATH", "./license.json")).resolve()
-        )
-
-        return PolarsRayClusterConfig(
-            # cluster configuration
-            binary_path=os.environ.get("BINARY_PATH"),
-            worker_max_restarts=worker_max_restarts,
-            # native binary configuration
-            cluster_id=cluster_id,
-            num_workers=num_workers,
-            min_workers=min_workers,
-            max_workers=max_workers,
-            license=(
-                license or PolarsEnterpriseLicenseConfig(license_path=license_path)
-            ),
-            scheduler=PolarsSchedulerConfig(
-                # cluster configuration
-                cpus_hint=0,
-                memory_hint=1,
-                # native binary configuration
-                cpu_reserved=1,
-                client_port=scheduler_client_port or _free_port(),
-                worker_registration_port=_free_port(),
-                observatory=PolarsObservatoryConfig(enabled=False),
-                scaling=PolarsScalingConfig(
-                    enabled=scaling_enabled,
-                    port=_free_port(),
-                ),
-            ),
-            worker=PolarsWorkerConfig(
-                # cluster configuration
-                cpus_hint=0,
-                memory_hint=1,
-                # native binary configuration
-                cpu_reserved=1,
-                task_port=worker_task_port,
-            ),
-            monitoring=PolarsMonitoringConfig(enabled=False),
-        )
-
-    return _factory
-
-
-@pytest.fixture
 def run_query() -> TestQuery:
     def _factory(
+        ctx: pn.ClusterContext,
         *,
-        cluster: PolarsRayCluster | None = None,
-        context: RayClusterContext | None = None,
         min_workers: int | None = None,
         max_workers: int | None = None,
     ) -> pl.DataFrame | None:
-        if cluster is not None:
-            ctx = pn.ClusterContext(uri=cluster._endpoints().client)
-        elif context is not None:
-            ctx = context
-        else:
-            msg = "No cluster or context provided"
-            raise ValueError(msg)
-
         query = (
             pl.LazyFrame({"a": [1, 2, 3], "b": [4, 4, 5]})
             .with_columns(pl.col("a").max().over("b").alias("c"))

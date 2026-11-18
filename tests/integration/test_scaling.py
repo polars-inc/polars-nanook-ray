@@ -4,15 +4,17 @@ import urllib.error
 import urllib.request
 
 import pytest
+import ray
 
-from polars_nanook_ray.config import SCALER_HOST
+from polars_nanook_ray import Autoscale, RayClusterContext
+from polars_nanook_ray._engine import SCALER_HOST
 from polars_nanook_ray.identity import WorkerId, list_workers
 
-from .conftest import RayClusterFactory, TestQuery
+from .conftest import ContextFactory, TestQuery, name_of, rescale, scheduler_actor
 
 
 def _wait_for_workers(
-    cluster_id: str,
+    namespace: str,
     expected: int,
     timeout: float = 30,
 ) -> set[WorkerId]:
@@ -20,7 +22,7 @@ def _wait_for_workers(
     workers: set[WorkerId] = set()
 
     while time.monotonic() < deadline:
-        workers = list_workers(cluster_id)
+        workers = list_workers(namespace)
         if len(workers) == expected:
             return workers
         time.sleep(1)
@@ -37,100 +39,97 @@ def _names(workers: set[WorkerId]) -> set[str]:
     return {worker.actor_name for worker in workers}
 
 
-def test_upscale(ray_cluster: RayClusterFactory) -> None:
-    cluster = ray_cluster(num_workers=1)
-    cluster_id = cluster.config.cluster_id
+def test_upscale(ray_cluster: ContextFactory) -> None:
+    cluster = ray_cluster(workers=1)
+    namespace = name_of(cluster)
 
-    assert _wait_for_workers(cluster_id, 1) == _workers_named(0)
+    assert _wait_for_workers(namespace, 1) == _workers_named(0)
 
-    cluster._rescale_worker_pool_to(2)
+    rescale(cluster, 2)
 
-    assert _wait_for_workers(cluster_id, 2) == _workers_named(0, 1)
+    assert _wait_for_workers(namespace, 2) == _workers_named(0, 1)
 
 
-def test_downscale_delete(ray_cluster: RayClusterFactory) -> None:
-    cluster = ray_cluster(num_workers=2)
-    cluster_id = cluster.config.cluster_id
+def test_downscale_delete(ray_cluster: ContextFactory) -> None:
+    cluster = ray_cluster(workers=2)
+    namespace = name_of(cluster)
 
-    before = _wait_for_workers(cluster_id, 2)
+    before = _wait_for_workers(namespace, 2)
     delete = set(sorted(before)[:1])
-    cluster._rescale_worker_pool_to(1, delete=_names(delete))
-    after = _wait_for_workers(cluster_id, 1)
+    rescale(cluster, 1, delete=_names(delete))
+    after = _wait_for_workers(namespace, 1)
 
     assert after == before - delete
 
 
-def test_downscale_keep(ray_cluster: RayClusterFactory) -> None:
-    cluster = ray_cluster(num_workers=2)
-    cluster_id = cluster.config.cluster_id
+def test_downscale_keep(ray_cluster: ContextFactory) -> None:
+    cluster = ray_cluster(workers=2)
+    namespace = name_of(cluster)
 
-    before = _wait_for_workers(cluster_id, 2)
+    before = _wait_for_workers(namespace, 2)
     keep = set(sorted(before)[:1])
-    cluster._rescale_worker_pool_to(1, keep=_names(keep))
-    after = _wait_for_workers(cluster_id, 1)
+    rescale(cluster, 1, keep=_names(keep))
+    after = _wait_for_workers(namespace, 1)
 
     assert after == keep
 
 
-def test_downscale_to_zero(ray_cluster: RayClusterFactory) -> None:
-    cluster = ray_cluster(num_workers=2)
-    cluster_id = cluster.config.cluster_id
+def test_downscale_to_zero(ray_cluster: ContextFactory) -> None:
+    cluster = ray_cluster(workers=2)
+    namespace = name_of(cluster)
 
-    assert len(_wait_for_workers(cluster_id, 2)) == 2
+    assert len(_wait_for_workers(namespace, 2)) == 2
 
-    cluster._rescale_worker_pool_to(0)
-    assert len(_wait_for_workers(cluster_id, 0)) == 0
+    rescale(cluster, 0)
+    assert len(_wait_for_workers(namespace, 0)) == 0
 
 
-def test_freed_index_reused(ray_cluster: RayClusterFactory) -> None:
-    cluster = ray_cluster(num_workers=2)
-    cluster_id = cluster.config.cluster_id
+def test_freed_index_reused(ray_cluster: ContextFactory) -> None:
+    cluster = ray_cluster(workers=2)
+    namespace = name_of(cluster)
 
-    assert _wait_for_workers(cluster_id, 2) == _workers_named(0, 1)
+    assert _wait_for_workers(namespace, 2) == _workers_named(0, 1)
 
     # remove the first only, and scale back up: the new worker takes the freed index
-    cluster._rescale_worker_pool_to(1, keep=_names(_workers_named(1)))
-    _wait_for_workers(cluster_id, 1)
+    rescale(cluster, 1, keep=_names(_workers_named(1)))
+    _wait_for_workers(namespace, 1)
 
-    cluster._rescale_worker_pool_to(2)
+    rescale(cluster, 2)
 
-    assert _wait_for_workers(cluster_id, 2) == _workers_named(0, 1)
-
-
-def test_repeated_upscale_adds_no_extra_workers(ray_cluster: RayClusterFactory) -> None:
-    cluster = ray_cluster(num_workers=1)
-    cluster_id = cluster.config.cluster_id
-
-    cluster._rescale_worker_pool_to(3)
-    cluster._rescale_worker_pool_to(3)
-
-    assert _wait_for_workers(cluster_id, 3) == _workers_named(0, 1, 2)
+    assert _wait_for_workers(namespace, 2) == _workers_named(0, 1)
 
 
-def test_scaling_disabled(ray_cluster: RayClusterFactory) -> None:
-    cluster = ray_cluster(
-        scaling_enabled=False,
-        num_workers=1,
-    )
+def test_repeated_upscale_adds_no_extra_workers(ray_cluster: ContextFactory) -> None:
+    cluster = ray_cluster(workers=1)
+    namespace = name_of(cluster)
 
-    port = cluster.config.scheduler.scaling.port
-    with pytest.raises(urllib.error.URLError):
-        urllib.request.urlopen(f"http://{SCALER_HOST}:{port}/scale_config")
+    rescale(cluster, 3)
+    rescale(cluster, 3)
+
+    assert _wait_for_workers(namespace, 3) == _workers_named(0, 1, 2)
+
+
+def _scaler_port(cluster: RayClusterContext) -> int | None:
+    return ray.get(scheduler_actor(cluster).scaler_port.remote(), timeout=30)
+
+
+def test_scaling_disabled(ray_cluster: ContextFactory) -> None:
+    cluster = ray_cluster(workers=1)
+
+    assert _scaler_port(cluster) is None
 
 
 @pytest.mark.parametrize("max_workers", [8, None])
 def test_scale_config(
-    ray_cluster: RayClusterFactory,
+    ray_cluster: ContextFactory,
     max_workers: int | None,
 ) -> None:
     cluster = ray_cluster(
-        scaling_enabled=True,
-        num_workers=1,
-        min_workers=0,
-        max_workers=max_workers,
+        autoscale=Autoscale(min_workers=0, max_workers=max_workers),
+        workers=1,
     )
 
-    port = cluster.config.scheduler.scaling.port
+    port = _scaler_port(cluster)
     url = f"http://{SCALER_HOST}:{port}/scale_config"
 
     with urllib.request.urlopen(url) as response:
@@ -143,14 +142,12 @@ def test_scale_config(
 
 
 def test_client_autoscaling(
-    ray_cluster: RayClusterFactory,
+    ray_cluster: ContextFactory,
     run_query: TestQuery,
 ) -> None:
-    cluster = ray_cluster(
-        scaling_enabled=True,
-        num_workers=0,
-    )
+    # the engine reaches the scheduler actor on a port picked free
+    cluster = ray_cluster(autoscale=Autoscale(), workers=0)
 
-    run_query(cluster=cluster, min_workers=2, max_workers=2)
+    run_query(cluster, min_workers=2, max_workers=2)
 
-    assert len(list_workers(cluster.config.cluster_id)) == 2
+    assert len(list_workers(name_of(cluster))) == 2

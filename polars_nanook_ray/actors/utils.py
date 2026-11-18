@@ -1,5 +1,6 @@
 import logging
 import os
+import pathlib
 import signal
 import typing
 
@@ -10,6 +11,9 @@ if typing.TYPE_CHECKING:
     from polars_nanook_ray.identity import WorkerId
 
 logger = logging.getLogger(__name__)
+
+# seconds to wait for an actor call to complete
+ACTOR_RESPONSE_TIMEOUT = 30
 
 
 def _log_to_stderr() -> None:
@@ -64,3 +68,9 @@ def terminate_actors(actors: list[ActorHandle], timeout: float) -> None:
         finally:
             for actor in actors:
                 ray.kill(actor)  # no-op if the actor is already gone
+
+
+def make_dirs(paths: typing.Iterable[str]) -> None:
+    """Create the directories `paths` on this node, if missing."""
+    for path in paths:
+        pathlib.Path(path).mkdir(parents=True, exist_ok=True)

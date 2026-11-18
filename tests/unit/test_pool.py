@@ -4,17 +4,12 @@ import typing
 
 import pytest
 
+from polars_nanook_ray._spec import ClusterSpec, build_spec
 from polars_nanook_ray.actors.pool import (
     Node,
     NoRoomForWorkers,
     WorkerExited,
     WorkerPool,
-)
-from polars_nanook_ray.config import (
-    PolarsEnterpriseLicenseConfig,
-    PolarsRayClusterConfig,
-    PolarsSchedulerConfig,
-    PolarsWorkerConfig,
 )
 from polars_nanook_ray.identity import WorkerId
 
@@ -61,20 +56,11 @@ class InMemoryWorkers:
         self.workers.remove(worker)
 
 
-def config(
-    cpus: int = 1,
-    memory: int = 1,
-    reconcile_interval: float = 10,
-    **kwargs: typing.Any,
-) -> PolarsRayClusterConfig:
-    """Return a cluster config, with `memory` in GiB."""
-    kwargs.setdefault("scheduler", PolarsSchedulerConfig())
-    return PolarsRayClusterConfig(
-        license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
-        worker=PolarsWorkerConfig(cpus_hint=cpus, memory_hint=memory * GIB),
-        worker_reconcile_interval=reconcile_interval,
-        **kwargs,
-    )
+def config(**kwargs: typing.Any) -> ClusterSpec:
+    kwargs.setdefault("cpus", 1)
+    kwargs.setdefault("memory", 1)
+    kwargs.setdefault("reconcile_interval", 10)
+    return build_spec(license="/nonexistent.json", **kwargs)
 
 
 def pool(workers: InMemoryWorkers, target: int = 0, **kwargs: typing.Any) -> WorkerPool:
@@ -195,7 +181,7 @@ def test_rescale_is_clamped_to_min_and_max_workers(
     requested: int, clamped: int
 ) -> None:
     workers = InMemoryWorkers()
-    worker_pool = pool(workers, min_workers=1, max_workers=2)
+    worker_pool = pool(workers, autoscale={"min_workers": 1, "max_workers": 2})
 
     worker_pool.rescale(requested)
 

@@ -21,19 +21,13 @@ from ray.actor import ActorHandle
 from ray.cluster_utils import Cluster
 from ray.exceptions import ActorUnavailableError, RayActorError
 
-from polars_nanook_ray.config import (
-    PolarsObservatoryConfig,
-    PolarsRayClusterConfig,
-    PolarsScalingConfig,
-    PolarsSchedulerConfig,
-)
+from polars_nanook_ray import Autoscale, Ports, RayClusterContext
 from polars_nanook_ray.identity import list_workers
-from polars_nanook_ray.ports import resolve_ports
 
 from .utils import (
-    free_port,
     head_cluster,
-    make_config,
+    make_context,
+    name_of,
     run_scheduler,
     wait_for_workers,
 )
@@ -51,21 +45,14 @@ def cluster() -> typing.Iterator[Cluster]:
     cluster.shutdown()
 
 
-@pytest.fixture
-def port() -> int:
-    return resolve_ports({"scaling.port": None})["scaling.port"]
+def scaling_context(**keywords: typing.Any) -> RayClusterContext:
+    return make_context(autoscale=Autoscale(), **keywords)
 
 
-def scaling_config(port: int, **kwargs: typing.Any) -> PolarsRayClusterConfig:
-    scheduler = PolarsSchedulerConfig(
-        cpus_hint=0,
-        memory_hint=1,
-        client_port=free_port(),
-        worker_registration_port=free_port(),
-        observatory=PolarsObservatoryConfig(enabled=False),
-        scaling=PolarsScalingConfig(enabled=True, port=port),
-    )
-    return make_config(scheduler=scheduler, **kwargs)
+def scaler_port(actor: ActorHandle) -> int:
+    port = ray.get(actor.scaler_port.remote(), timeout=30)  # type: ignore[var-annotated]
+    assert port is not None
+    return typing.cast("int", port)
 
 
 def scale_config(port: int) -> dict[str, typing.Any]:
@@ -123,11 +110,11 @@ Scheduler = typing.Callable[..., ActorHandle]
 
 @pytest.fixture
 def scheduler(cluster: Cluster) -> typing.Iterator[Scheduler]:  # noqa: ARG001
-    """Start a scheduler actor from a config, and stop it after the test."""
+    """Start a scheduler actor from a context, and stop it after the test."""
     running: list[typing.Iterator[ActorHandle]] = []
 
-    def _start(config: PolarsRayClusterConfig, max_restarts: int = 0) -> ActorHandle:
-        running.append(run_scheduler(config, max_restarts))
+    def _start(ctx: RayClusterContext, max_restarts: int = 0) -> ActorHandle:
+        running.append(run_scheduler(ctx, max_restarts))
         return next(running[-1])
 
     yield _start
@@ -136,16 +123,16 @@ def scheduler(cluster: Cluster) -> typing.Iterator[Scheduler]:  # noqa: ARG001
         next(actor, None)
 
 
-def started(scheduler: Scheduler, config: PolarsRayClusterConfig) -> ActorHandle:
+def started(scheduler: Scheduler, ctx: RayClusterContext) -> ActorHandle:
     """Return a scheduler once its engine runs and its scaling endpoint answers."""
-    actor = scheduler(config)
+    actor = scheduler(ctx)
     engine_pid(actor)
-    assert scale_config(config.scheduler.scaling.port)["min"] == 0
+    assert scale_config(scaler_port(actor))["min"] == 0
     return actor
 
 
 def test_the_engine_starts_once_the_endpoint_answers(
-    scheduler: Scheduler, port: int, tmp_path: pathlib.Path
+    scheduler: Scheduler, tmp_path: pathlib.Path
 ) -> None:
     answer = tmp_path / "scale_config.json"
     engine = tmp_path / "engine"
@@ -158,7 +145,7 @@ def test_the_engine_starts_once_the_endpoint_answers(
     )
     engine.chmod(0o755)
 
-    actor = started(scheduler, scaling_config(port, binary_path=str(engine)))
+    actor = started(scheduler, scaling_context(binary_path=str(engine)))
 
     wait_until(lambda: answer.exists() and answer.stat().st_size > 0)
     assert json.loads(answer.read_text())["desired"] == 0
@@ -166,25 +153,27 @@ def test_the_engine_starts_once_the_endpoint_answers(
 
 
 def test_stop_closes_the_endpoint_and_stops_the_workers_and_engine(
-    scheduler: Scheduler, port: int
+    scheduler: Scheduler,
 ) -> None:
-    config = scaling_config(port, num_workers=1)
-    actor = started(scheduler, config)
+    ctx = scaling_context(workers=1)
+    actor = started(scheduler, ctx)
+    port = scaler_port(actor)
     engine = engine_pid(actor)
-    wait_for_workers(config.cluster_id, 1)
+    wait_for_workers(name_of(ctx), 1)
 
     ray.get(actor.stop.remote(), timeout=30)
 
     assert is_free(port)
     assert is_gone(engine)
-    assert list_workers(config.cluster_id) == set()
+    assert list_workers(name_of(ctx)) == set()
 
 
 @pytest.mark.parametrize("how", ["sigterm", "ray"])
 def test_a_stopped_actor_frees_the_port_and_stops_the_engine(
-    scheduler: Scheduler, port: int, how: str
+    scheduler: Scheduler, how: str
 ) -> None:
-    actor = started(scheduler, scaling_config(port))
+    actor = started(scheduler, scaling_context())
+    port = scaler_port(actor)
     engine = engine_pid(actor)
 
     if how == "sigterm":
@@ -195,56 +184,33 @@ def test_a_stopped_actor_frees_the_port_and_stops_the_engine(
     wait_until(lambda: is_free(port) and is_gone(engine))
 
 
-def test_a_restarted_actor_serves_on_the_same_port(
-    scheduler: Scheduler, port: int
-) -> None:
-    actor = scheduler(scaling_config(port), max_restarts=1)
+def test_a_restarted_actor_serves_scaling_requests_again(scheduler: Scheduler) -> None:
+    actor = scheduler(scaling_context(), max_restarts=1)
     engine = engine_pid(actor)
     pid = actor_pid(actor)
-    scale_config(port)  # leaves a connection in TIME_WAIT on the port
+    scale_config(scaler_port(actor))
 
     os.kill(pid, signal.SIGKILL)
 
     wait_until(lambda: is_gone(engine))
     wait_until(lambda: restarted(actor, pid))
-    assert scale_config(port)["desired"] == 0
+    assert scale_config(scaler_port(actor))["desired"] == 0
 
 
-def test_a_taken_scaling_port_fails_the_start(scheduler: Scheduler, port: int) -> None:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", port))
-        listener.listen()
-
-        actor = scheduler(scaling_config(port))
-
-        with pytest.raises(RayActorError, match=rf"scaling.port {port} .*in use"):
-            ray.get(actor.get_host.remote(), timeout=30)
-
-
-def test_a_failed_engine_start_frees_the_port(scheduler: Scheduler, port: int) -> None:
-    actor = scheduler(scaling_config(port, binary_path="/nonexistent/engine"))
+def test_a_failed_engine_start_fails_the_actor(scheduler: Scheduler) -> None:
+    actor = scheduler(scaling_context(binary_path="/nonexistent/engine"))
 
     with pytest.raises(RayActorError, match="nonexistent"):
         ray.get(actor.get_host.remote(), timeout=30)
-    assert is_free(port)
 
 
-def test_a_taken_engine_port_leaves_the_scaling_port_free(
-    scheduler: Scheduler, port: int
-) -> None:
+def test_a_taken_engine_port_fails_the_actor(scheduler: Scheduler) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("", 0))
         listener.listen()
         taken = listener.getsockname()[1]
-        config = scaling_config(port)
-        config = config.model_copy(
-            update={
-                "scheduler": config.scheduler.model_copy(update={"client_port": taken})
-            }
-        )
 
-        actor = scheduler(config)
+        actor = scheduler(scaling_context(ports=Ports(client=taken, dashboard=None)))
 
-        with pytest.raises(RayActorError, match=rf"client_port {taken} .*in use"):
+        with pytest.raises(RayActorError, match=rf"client {taken} .*in use"):
             ray.get(actor.get_host.remote(), timeout=30)
-    assert is_free(port)

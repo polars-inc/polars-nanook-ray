@@ -10,20 +10,14 @@ import ray
 from ray.actor import ActorHandle
 from ray.cluster_utils import Cluster
 
+from polars_nanook_ray import Ports, RayClusterContext
 from polars_nanook_ray.actors import (
     PolarsSchedulerActor,
     resolve_actor_handles,
     terminate_actors,
 )
-from polars_nanook_ray.actors.head_node import placement_options
-from polars_nanook_ray.cluster import PolarsRayCluster
-from polars_nanook_ray.config import (
-    PolarsEnterpriseLicenseConfig,
-    PolarsObservatoryConfig,
-    PolarsRayClusterConfig,
-    PolarsSchedulerConfig,
-    PolarsWorkerConfig,
-)
+from polars_nanook_ray.actors.head_node import scheduler_options
+from polars_nanook_ray.actors.utils import ACTOR_RESPONSE_TIMEOUT
 from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
 
@@ -82,60 +76,48 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def make_config(worker_cpus: int = 1, **kwargs: typing.Any) -> PolarsRayClusterConfig:
+def make_context(**keywords: typing.Any) -> RayClusterContext:
     # an engine that keeps running, or its actor exits with it
-    kwargs.setdefault("binary_path", str(_STUB_ENGINE))
-    kwargs.setdefault(
-        "scheduler",
-        PolarsSchedulerConfig(
-            cpus_hint=0,
-            memory_hint=1,
-            client_port=free_port(),
-            worker_registration_port=free_port(),
-            observatory=PolarsObservatoryConfig(enabled=False),
-        ),
-    )
-    kwargs.setdefault(
-        "worker", PolarsWorkerConfig(cpus_hint=worker_cpus, memory_hint=1)
-    )
-    return PolarsRayClusterConfig(
-        cluster_id=f"polars-nanook-{uuid.uuid4().hex[:8]}",
-        license=PolarsEnterpriseLicenseConfig(license_path="/nonexistent.json"),
-        **kwargs,
-    )
+    keywords.setdefault("binary_path", str(_STUB_ENGINE))
+    keywords.setdefault("license", "/nonexistent.json")
+    keywords.setdefault("name", f"polars-nanook-{uuid.uuid4().hex[:8]}")
+    keywords.setdefault("workers", 0)
+    keywords.setdefault("memory", 1 / 1024**3)
+    keywords.setdefault("observatory", False)
+    keywords.setdefault("ports", Ports(client=None, dashboard=None))
+    return RayClusterContext(**keywords)
+
+
+def name_of(ctx: RayClusterContext) -> str:
+    return ctx._spec.name
 
 
 def run_scheduler(
-    config: PolarsRayClusterConfig, max_restarts: int = 0
+    ctx: RayClusterContext, max_restarts: int = 0
 ) -> typing.Iterator[ActorHandle]:
     """Yield a scheduler actor on the head node, then stop it and its workers."""
     actor = PolarsSchedulerActor.options(  # type: ignore[attr-defined]
         name=SCHEDULER.actor_name,
-        namespace=config.cluster_id,
+        namespace=name_of(ctx),
         max_restarts=max_restarts,
-        **placement_options(
-            "scheduler",
-            resource=config.scheduler.placement_resource,
-            num_cpus=config.scheduler.cpus_hint,
-            memory=config.scheduler.memory_hint,
-        ),
-    ).remote(config)
+        **scheduler_options(ctx._spec.scheduler_resource),
+    ).remote(ctx._spec)
 
     yield actor
 
-    PolarsRayCluster(config).stop()
-    terminate_actors([actor], config.actor_response_timeout)
+    ctx.stop()
+    terminate_actors([actor], ACTOR_RESPONSE_TIMEOUT)
 
 
-def wait_for_workers(cluster_id: str, expected: int) -> dict[WorkerId, ActorHandle]:
+def wait_for_workers(namespace: str, expected: int) -> dict[WorkerId, ActorHandle]:
     deadline = time.monotonic() + 30
-    workers = list_workers(cluster_id)
+    workers = list_workers(namespace)
     while len(workers) != expected and time.monotonic() < deadline:
         time.sleep(0.5)
-        workers = list_workers(cluster_id)
+        workers = list_workers(namespace)
 
     assert len(workers) == expected, sorted(workers)
-    return resolve_actor_handles(workers, cluster_id)
+    return resolve_actor_handles(workers, namespace)
 
 
 def node_id(actor: ActorHandle) -> str:
