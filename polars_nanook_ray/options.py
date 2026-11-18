@@ -44,12 +44,15 @@ class ServiceAccount(BaseModel):
         client_id: str,
         client_secret: str | SecretStr,
         cert_dir: str | os.PathLike[str] = "/tmp/polars/license",
+        **data: typing.Any,
     ) -> None:
+        # pydantic validates mappings through `__init__` too, unknown keys in `data`
         super().__init__(
             workspace_id=workspace_id,
             client_id=client_id,
             client_secret=client_secret,
             cert_dir=os.fspath(cert_dir),
+            **data,
         )
 
 
@@ -102,7 +105,7 @@ class Storage(BaseModel):
 
     def __init__(
         self,
-        url: str | os.PathLike[str],
+        url: str | os.PathLike[str] | None = None,
         /,
         *,
         options: typing.Mapping[str, str] | None = None,
@@ -110,9 +113,13 @@ class Storage(BaseModel):
         presign_duration: str | None = None,
         allow_deletes: bool | None = None,
         shared: bool = False,
+        **data: typing.Any,
     ) -> None:
+        # pydantic validates mappings through `__init__` too, `url` among `data`
+        if url is not None:
+            data["url"] = url
         super().__init__(
-            url=url,
+            **data,
             options=options or {},
             endpoint=endpoint,
             presign_duration=presign_duration,
