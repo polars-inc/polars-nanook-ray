@@ -51,8 +51,6 @@ class RayClusterContext(ClusterContext):
     license
         A license file path, a license server `http(s)://` URI, or a `ServiceAccount`
         (or the mapping of one) validating online.
-    accept_eula
-        Accept the Polars Nanook EULA, without which the engine refuses to start.
     name
         The cluster ID, also the Ray namespace of its actors.
     workers
@@ -74,8 +72,6 @@ class RayClusterContext(ClusterContext):
         Where workers exchange shuffle data: a `Storage`, URL or absolute path.
     anonymous_results
         Where the results of anonymous queries go.
-    checkpoints
-        Where workers checkpoint queries; no checkpoints if unset.
     spill_dir
         The local directory Polars spills to on each worker node.
     ports
@@ -130,7 +126,6 @@ class RayClusterContext(ClusterContext):
         self,
         *,
         license: "str | os.PathLike[str] | ServiceAccount | typing.Mapping[str, typing.Any]",
-        accept_eula: bool = False,
         name: str = "polars-nanook",
         workers: int = 1,
         cpus: float = 1,
@@ -141,7 +136,6 @@ class RayClusterContext(ClusterContext):
         max_workers: int | None = None,
         shuffle_data: "StorageLike" = "/tmp/polars/shuffle-data",
         anonymous_results: "StorageLike" = "/tmp/polars/anonymous-results",
-        checkpoints: "StorageLike | None" = None,
         spill_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
         ports: "Ports | typing.Mapping[str, int | None] | None" = None,
         tls: "Tls | typing.Mapping[str, str] | None" = None,

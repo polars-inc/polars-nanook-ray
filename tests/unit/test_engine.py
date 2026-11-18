@@ -154,13 +154,13 @@ def test_paths_are_local_unless_shared() -> None:
     spec = build_spec(
         license="/license.json",
         shuffle_data=pathlib.Path("/mnt/local/shuffle"),
-        checkpoints=Storage("/mnt/nfs/checkpoints", shared=True),
+        anonymous_results=Storage("/mnt/nfs/results", shared=True),
     )
 
     worker = _worker(spec)["worker"]
     assert worker["shuffle_location"] == {"local": {"path": "/mnt/local/shuffle"}}
-    assert worker["checkpoint_location"] == {
-        "shared_filesystem": {"path": "/mnt/nfs/checkpoints"}
+    assert _scheduler(spec)["scheduler"]["anonymous_result_location"] == {
+        "shared_filesystem": {"path": "/mnt/nfs/results"}
     }
 
 
@@ -389,14 +389,12 @@ def test_worker_resources(keywords: dict, resources: dict) -> None:
 def test_engine_environment() -> None:
     spec = build_spec(
         license="/license.json",
-        accept_eula=True,
         log_level="trace",
         spill_dir="/scratch",
         env_vars={"RUST_BACKTRACE": "1", "FOO": "bar"},
     )
 
     expected = {
-        "POLARS_EULA_ACCEPTED": "yes",
         "PLC_LOG_LEVEL": "trace",
         "RUST_BACKTRACE": "1",
         "FOO": "bar",
@@ -453,7 +451,6 @@ def test_cluster_from_yaml_shaped_mappings() -> None:
         "workers": 2,
         "shuffle_data": {"url": "s3://bucket/shuffle", "options": {"aws_region": "x"}},
         "anonymous_results": "gs://bucket/results",
-        "checkpoints": {"url": "/mnt/nfs/checkpoints", "shared": True},
         "ports": {"client": 6051, "task": 6000},
         "tls": {"cert_file": "/cert.pem", "key_file": "/key.pem"},
         "auth": {"url": "https://idp/jwks", "issuer": "idp", "audience": "aud"},
@@ -478,7 +475,4 @@ def test_cluster_from_yaml_shaped_mappings() -> None:
     worker = _worker(spec)["worker"]
     assert worker["shuffle_location"] == {
         "s3": {"url": "s3://bucket/shuffle", "aws_region": "x"}
-    }
-    assert worker["checkpoint_location"] == {
-        "shared_filesystem": {"path": "/mnt/nfs/checkpoints"}
     }

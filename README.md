@@ -43,7 +43,6 @@ ray.init(address="auto")
 
 with RayClusterContext(
     license="/path/to/license.json",
-    accept_eula=True,
     workers=4,  # 1 CPU and 2 GiB each: Ray places them where they fit
 ) as ctx:
     print(
@@ -103,11 +102,14 @@ With a license server, the scheduler and the workers register with it. This
 package does not run the license server: deploy it as its own service, outside
 Ray, and start it before any cluster that points at it.
 
-Set `accept_eula=True` to accept the Polars EULA.
+To run with a Polars Nanook Enterprise license, accept the EULA by setting
+`POLARS_EULA_ACCEPTED=yes`, either on the Ray nodes or with
+`env_vars={"POLARS_EULA_ACCEPTED": "yes"}`. Without it the engine prints the EULA
+and refuses to start.
 
 ## Storage
 
-`shuffle_data`, `anonymous_results` and `checkpoints` each take a URL or an
+`shuffle_data` and `anonymous_results` each take a URL or an
 absolute path. The scheme picks the backend:
 
 - `s3://` or `s3a://`: S3
@@ -120,7 +122,6 @@ RayClusterContext(
     license="/path/to/license.json",
     shuffle_data="s3://bucket/shuffle",
     anonymous_results="s3://bucket/results",
-    checkpoints="s3://bucket/checkpoints",  # turns checkpointing on
 )
 ```
 
@@ -141,7 +142,7 @@ For a filesystem mounted at the same path on every node, such as NFS, use
 `Storage("/mnt/nfs/shuffle", shared=True)`.
 
 `shuffle_data` and `anonymous_results` default to `/tmp/polars/shuffle-data` and
-`/tmp/polars/anonymous-results`. Checkpointing is off by default. `spill_dir`
+`/tmp/polars/anonymous-results`. `spill_dir`
 (default `/tmp/polars/temporary-data`) is where Polars spills to disk on each
 worker.
 
@@ -344,7 +345,6 @@ with open("cluster.yaml") as f:
 
 ```yaml
 license: /etc/polars/license.json
-accept_eula: true
 workers: 8
 cpus: 15
 memory: 56

@@ -62,6 +62,7 @@ def make_context(**keywords: typing.Any) -> RayClusterContext:
     keywords.setdefault("observatory", False)
     keywords.setdefault("host_metrics", False)
     keywords.setdefault("ports", Ports(client=None, dashboard=None))
+    keywords.setdefault("env_vars", {"POLARS_EULA_ACCEPTED": "yes"})
     return RayClusterContext(**keywords)
 
 

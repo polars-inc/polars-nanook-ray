@@ -65,7 +65,6 @@ class ClusterSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     license: LicenseFile | LicenseServer | ServiceAccount
-    accept_eula: bool = False
     name: str = Field(default="polars-nanook", pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
     workers: int = Field(default=1, ge=0)
     cpus: float = Field(default=1, ge=0)
@@ -76,7 +75,6 @@ class ClusterSpec(BaseModel):
     max_workers: int | None = Field(default=None, ge=0)
     shuffle_data: Storage = Storage("/tmp/polars/shuffle-data")
     anonymous_results: Storage = Storage("/tmp/polars/anonymous-results")
-    checkpoints: Storage | None = None
     spill_dir: str = "/tmp/polars/temporary-data"
     ports: Ports = Ports()
     tls: Tls | None = None
@@ -107,7 +105,7 @@ class ClusterSpec(BaseModel):
     def _license(cls, value: typing.Any) -> typing.Any:
         return _parse_license(value)
 
-    @field_validator("shuffle_data", "anonymous_results", "checkpoints", mode="before")
+    @field_validator("shuffle_data", "anonymous_results", mode="before")
     @classmethod
     def _storage(cls, value: typing.Any) -> typing.Any:
         return _parse_storage(value)
@@ -170,7 +168,6 @@ StorageLike: typing.TypeAlias = (
 def build_spec(
     *,
     license: str | os.PathLike[str] | ServiceAccount | typing.Mapping[str, typing.Any],
-    accept_eula: bool = False,
     name: str = "polars-nanook",
     workers: int = 1,
     cpus: float = 1,
@@ -181,7 +178,6 @@ def build_spec(
     max_workers: int | None = None,
     shuffle_data: StorageLike = "/tmp/polars/shuffle-data",
     anonymous_results: StorageLike = "/tmp/polars/anonymous-results",
-    checkpoints: StorageLike | None = None,
     spill_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
     ports: Ports | typing.Mapping[str, int | None] | None = None,
     tls: Tls | typing.Mapping[str, str] | None = None,
