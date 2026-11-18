@@ -38,10 +38,17 @@ ray start \
   --ray-client-server-port="10001"
 ```
 
-The scheduler and the scaler always run on the Ray head node,
+The scheduler and the scaler run on the Ray head node by default,
 pinned with Ray's built-in `node:__internal_head__` resource; no custom resource is
 needed. They request no CPUs by default, so a head node started with `--num-cpus=0`
 works too.
+
+To pin them to another node, give that node a custom resource, for example
+`ray start --resources='{"scheduler_node": 1}'`, and set
+`PolarsSchedulerConfig(placement_resource="scheduler_node")`. With scaling enabled,
+only one node may advertise it, as the scaler must share the scheduler's node.
+`placement_resource=None` lets Ray place the scheduler on any node that fits its
+`cpus_hint` and `memory_hint`; scaling then can't be enabled.
 
 If you do not already have one, create a Polars Nanook service account through the
 [Polars Nanook portal](https://nanook.pola.rs/api/redirects/register).
