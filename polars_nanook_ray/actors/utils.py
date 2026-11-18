@@ -8,8 +8,6 @@ import typing
 
 import ray
 from ray.actor import ActorHandle
-from ray.util.state import list_actors
-from ray.util.state.common import RAY_MAX_LIMIT_FROM_API_SERVER
 
 logger = logging.getLogger(__name__)
 
@@ -42,21 +40,6 @@ def _handle_sigterm(func: typing.Callable[[], None]) -> None:
                 previous_handler(signum, frame)  # type: ignore[arg-type]
 
     signal.signal(signal.SIGTERM, _handler)
-
-
-def list_actor_names(cluster_id: str, prefix: str) -> set[str]:
-    return {
-        actor.name
-        for actor in list_actors(
-            address=ray.get_runtime_context().gcs_address,
-            filters=[
-                ("ray_namespace", "=", cluster_id),
-                ("state", "!=", "DEAD"),
-            ],
-            limit=RAY_MAX_LIMIT_FROM_API_SERVER,
-        )
-        if isinstance(actor.name, str) and actor.name.startswith(prefix)
-    }
 
 
 def resolve_actor_handles(names: set[str], namespace: str) -> dict[str, ActorHandle]:

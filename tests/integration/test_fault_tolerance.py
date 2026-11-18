@@ -8,7 +8,7 @@ import ray
 from ray.actor import ActorHandle
 from ray.util.state import list_actors
 
-from polars_nanook_ray.actors import SCHEDULER_NAME_PREFIX, WORKER_NAME_PREFIX
+from polars_nanook_ray.actors import SCHEDULER_NAME_PREFIX
 
 from .conftest import RayClusterFactory, TestQuery
 
@@ -29,13 +29,14 @@ def _actor_pid(cluster_id: str, name: str) -> int:
 
 def _wait_for_worker_restart(
     cluster_id: str,
+    name: str,
     actor: ActorHandle,
     actor_pid: int,
 ) -> int:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
-            new_actor_pid = _actor_pid(cluster_id, f"{WORKER_NAME_PREFIX}-0")
+            new_actor_pid = _actor_pid(cluster_id, name)
         except AssertionError:
             new_actor_pid = None
 
@@ -59,8 +60,8 @@ def test_worker_restart_cleanup(
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
 
-    actor = cluster._worker_actors[0]
-    actor_pid = _actor_pid(cluster_id, f"{WORKER_NAME_PREFIX}-0")
+    name, actor = next(iter(cluster._worker_actors.items()))
+    actor_pid = _actor_pid(cluster_id, name)
     binary_pid = ray.get(actor.get_worker_pid.remote())
 
     # killing the actor will orphan the child process
@@ -68,7 +69,7 @@ def test_worker_restart_cleanup(
     time.sleep(2)
 
     try:
-        new_actor_pid = _wait_for_worker_restart(cluster_id, actor, actor_pid)
+        new_actor_pid = _wait_for_worker_restart(cluster_id, name, actor, actor_pid)
         new_binary_pid = ray.get(actor.get_worker_pid.remote())
 
         assert new_actor_pid is not None

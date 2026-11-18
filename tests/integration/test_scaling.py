@@ -7,8 +7,8 @@ import ray
 
 from polars_nanook_ray.actors import (
     SCALER_NAME_PREFIX,
-    WORKER_NAME_PREFIX,
-    list_actor_names,
+    list_worker_names,
+    worker_name,
 )
 from polars_nanook_ray.config import SCALER_HOST
 
@@ -24,7 +24,7 @@ def _wait_for_workers(
     names: set[str] = set()
 
     while time.monotonic() < deadline:
-        names = list_actor_names(cluster_id, WORKER_NAME_PREFIX)
+        names = list_worker_names(cluster_id)
         if len(names) == expected:
             return names
         time.sleep(1)
@@ -33,17 +33,21 @@ def _wait_for_workers(
     raise AssertionError(msg)
 
 
+def _worker_names(*indices: int) -> set[str]:
+    return {worker_name(index) for index in indices}
+
+
 def test_upscale(ray_cluster: RayClusterFactory) -> None:
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
 
     names = _wait_for_workers(cluster_id, 1)
-    assert names == {f"{WORKER_NAME_PREFIX}-{i}" for i in range(1)}
+    assert names == _worker_names(0)
 
     cluster._rescale_worker_pool_to(2)
 
     names = _wait_for_workers(cluster_id, 2)
-    assert names == {f"{WORKER_NAME_PREFIX}-{i}" for i in range(2)}
+    assert names == _worker_names(0, 1)
 
 
 def test_downscale_delete(ray_cluster: RayClusterFactory) -> None:
@@ -80,22 +84,31 @@ def test_downscale_to_zero(ray_cluster: RayClusterFactory) -> None:
     assert len(_wait_for_workers(cluster_id, 0)) == 0
 
 
-def test_worker_id_offset(ray_cluster: RayClusterFactory) -> None:
+def test_freed_index_reused(ray_cluster: RayClusterFactory) -> None:
     cluster = ray_cluster(num_workers=2)
     cluster_id = cluster.config.cluster_id
 
     names = _wait_for_workers(cluster_id, 2)
-    assert names == {f"{WORKER_NAME_PREFIX}-{i}" for i in range(2)}
+    assert names == _worker_names(0, 1)
 
-    # remove first only, and scale back up; the new worker must not reuse the terminated
-    # worker's id
-    cluster._rescale_worker_pool_to(1, keep={f"{WORKER_NAME_PREFIX}-1"})
+    # remove the first only, and scale back up: the new worker takes the freed index
+    cluster._rescale_worker_pool_to(1, keep=_worker_names(1))
     _wait_for_workers(cluster_id, 1)
 
     cluster._rescale_worker_pool_to(2)
 
     names = _wait_for_workers(cluster_id, 2)
-    assert names == {f"{WORKER_NAME_PREFIX}-{i}" for i in range(1, 3)}
+    assert names == _worker_names(0, 1)
+
+
+def test_repeated_upscale_adds_no_extra_workers(ray_cluster: RayClusterFactory) -> None:
+    cluster = ray_cluster(num_workers=1)
+    cluster_id = cluster.config.cluster_id
+
+    cluster._rescale_worker_pool_to(3)
+    cluster._rescale_worker_pool_to(3)
+
+    assert _wait_for_workers(cluster_id, 3) == _worker_names(0, 1, 2)
 
 
 def test_scaling_disabled(ray_cluster: RayClusterFactory) -> None:
@@ -143,4 +156,4 @@ def test_client_autoscaling(
 
     run_query(cluster=cluster, min_workers=2, max_workers=2)
 
-    assert len(list_actor_names(cluster.config.cluster_id, WORKER_NAME_PREFIX)) == 2
+    assert len(list_worker_names(cluster.config.cluster_id)) == 2

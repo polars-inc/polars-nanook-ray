@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 import typing
 
 import ray
@@ -19,18 +18,10 @@ from polars_nanook_ray.subprocess_runner import SubprocessRunner
 if typing.TYPE_CHECKING:
     import pathlib
 
+    from ray.actor import ActorHandle
 
-WORKER_NAME_PREFIX = "worker"
 
 logger = logging.getLogger(__name__)
-
-
-def resolve_worker_name(worker_id: int) -> str:
-    return f"{WORKER_NAME_PREFIX}-{worker_id}"
-
-
-def _resolve_worker_name_regex() -> re.Pattern:
-    return re.compile(rf"^{WORKER_NAME_PREFIX}-(\d+)$")
 
 
 @ray.remote
@@ -40,13 +31,12 @@ class PolarsWorkerActor:
     def __init__(
         self,
         config: PolarsRayClusterConfig,
-        worker_id: int,
+        worker_name: str,
         scheduler_host: str,
     ) -> None:
         self.config_cluster: PolarsRayClusterConfig = config
 
-        self.worker_id = worker_id
-        self.worker_name: str = resolve_worker_name(worker_id)
+        self.worker_name = worker_name
         self.scheduler_host = scheduler_host
 
         self._config_path: pathlib.Path = _resolve_config_path(self.worker_name)
@@ -125,3 +115,30 @@ class PolarsWorkerActor:
     def get_worker_pid(self) -> int | None:
         """Return the OS process ID of the worker binary subprocess."""
         return self._runner.pid()
+
+
+def start_worker(
+    config: PolarsRayClusterConfig,
+    name: str,
+    scheduler_host: str,
+) -> "ActorHandle":
+    """Request the worker `name` from Ray, or return it if it already exists.
+
+    Ray places it on a node with its CPUs and memory free, spreading the workers over
+    the nodes as best it can; until one has room, it waits, as demand Ray's autoscaler
+    can add nodes for.
+    """
+    actor = PolarsWorkerActor.options(  # type: ignore[attr-defined]
+        name=name,
+        namespace=config.cluster_id,
+        get_if_exists=True,
+        lifetime="detached",
+        max_restarts=config.worker_max_restarts,
+        num_cpus=config.worker.cpus_hint,
+        memory=config.worker.memory_hint,
+        scheduling_strategy="SPREAD",
+    ).remote(config, name, scheduler_host)
+
+    logger.info("Requested worker %s", name)
+
+    return actor
