@@ -14,10 +14,16 @@ def test_construction_validates_without_ray() -> None:
     assert not ray.is_initialized()
 
 
-def test_accept_eula_is_a_keyword() -> None:
-    ctx = RayComputeContext(license="/license.json", accept_eula=True)
+def test_the_eula_is_accepted_by_default() -> None:
+    ctx = RayComputeContext(license="/license.json")
 
     assert ctx._spec.accept_eula
+
+
+def test_accept_eula_is_a_keyword() -> None:
+    ctx = RayComputeContext(license="/license.json", accept_eula=False)
+
+    assert not ctx._spec.accept_eula
 
 
 def test_relative_binary_path_made_absolute() -> None:
