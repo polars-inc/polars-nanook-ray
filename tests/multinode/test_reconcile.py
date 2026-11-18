@@ -12,7 +12,7 @@ import ray
 from ray.actor import ActorHandle
 from ray.cluster_utils import Cluster
 
-from polars_nanook_ray import RayClusterContext
+from polars_nanook_ray import RayComputeContext
 from polars_nanook_ray.identity import list_workers
 
 from .utils import (
@@ -36,12 +36,12 @@ def cluster() -> typing.Iterator[Cluster]:
 
 
 @pytest.fixture
-def ctx() -> RayClusterContext:
+def ctx() -> RayComputeContext:
     return make_context(workers=2, reconcile_interval=0.5)
 
 
 @pytest.fixture
-def scheduler(cluster: Cluster, ctx: RayClusterContext) -> typing.Iterator[ActorHandle]:
+def scheduler(cluster: Cluster, ctx: RayComputeContext) -> typing.Iterator[ActorHandle]:
     cluster.add_node(num_cpus=2)
     cluster.add_node(num_cpus=2)
     cluster.wait_for_nodes()
@@ -50,7 +50,7 @@ def scheduler(cluster: Cluster, ctx: RayClusterContext) -> typing.Iterator[Actor
 
 
 def test_scheduler_fills_the_pool_to_num_workers(
-    ctx: RayClusterContext, scheduler: ActorHandle
+    ctx: RayComputeContext, scheduler: ActorHandle
 ) -> None:
     ray.get(scheduler.get_host.remote())
 
@@ -58,7 +58,7 @@ def test_scheduler_fills_the_pool_to_num_workers(
 
 
 def test_worker_past_its_restart_limit_is_replaced(
-    ctx: RayClusterContext, scheduler: ActorHandle
+    ctx: RayComputeContext, scheduler: ActorHandle
 ) -> None:
     ray.get(scheduler.get_host.remote())
     workers = wait_for_workers(name_of(ctx), 2)
@@ -104,7 +104,7 @@ def test_ray_restarts_a_worker_of_a_lost_node_on_another_node(
 
 
 def test_stop_leaves_no_workers_behind(
-    ctx: RayClusterContext, scheduler: ActorHandle
+    ctx: RayComputeContext, scheduler: ActorHandle
 ) -> None:
     ray.get(scheduler.get_host.remote())
     wait_for_workers(name_of(ctx), 2)
@@ -124,7 +124,7 @@ def _engine_alive(pid: int) -> bool:
 
 
 def test_workers_die_with_their_scheduler_and_its_restart_starts_new_ones(
-    cluster: Cluster, ctx: RayClusterContext
+    cluster: Cluster, ctx: RayComputeContext
 ) -> None:
     cluster.add_node(num_cpus=2)
     cluster.add_node(num_cpus=2)

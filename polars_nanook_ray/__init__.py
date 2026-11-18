@@ -1,4 +1,4 @@
-from polars_nanook_ray.context import RayClusterContext
+from polars_nanook_ray.context import RayComputeContext
 from polars_nanook_ray.options import (
     Autoscale,
     Jwks,
@@ -14,7 +14,7 @@ __all__ = [
     "EngineStartError",
     "Jwks",
     "Ports",
-    "RayClusterContext",
+    "RayComputeContext",
     "ServiceAccount",
     "Storage",
     "Tls",

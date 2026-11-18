@@ -8,7 +8,7 @@ import pytest
 import ray
 from ray.cluster_utils import Cluster
 
-from polars_nanook_ray import EngineStartError, Ports, RayClusterContext
+from polars_nanook_ray import EngineStartError, Ports, RayComputeContext
 from polars_nanook_ray.actors import WorkerExited
 
 LICENSE_ERROR = "License file check failed: Failed to read license file"
@@ -83,8 +83,8 @@ def _engine(tmp_path: pathlib.Path, scheduler: str, worker: str = "listen") -> _
 
 def _context(
     tmp_path: pathlib.Path, engine: _Engine, workers: int
-) -> RayClusterContext:
-    return RayClusterContext(
+) -> RayComputeContext:
+    return RayComputeContext(
         license="/dev/null",
         name=f"start-errors-{tmp_path.name}",
         binary_path=engine.path,
@@ -97,7 +97,7 @@ def _context(
     )
 
 
-def _actors(ctx: RayClusterContext) -> list[str]:
+def _actors(ctx: RayComputeContext) -> list[str]:
     return [
         actor["name"]
         for actor in ray.util.list_named_actors(all_namespaces=True)

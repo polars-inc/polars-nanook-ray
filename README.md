@@ -37,11 +37,11 @@ Then start a cluster of four workers on this host and run a query on it:
 import polars as pl
 import ray
 
-from polars_nanook_ray import RayClusterContext
+from polars_nanook_ray import RayComputeContext
 
 ray.init(address="auto")
 
-with RayClusterContext(
+with RayComputeContext(
     license="/path/to/license.json",
     workers=4,  # 1 CPU and 2 GiB each: Ray places them where they fit
 ) as ctx:
@@ -56,7 +56,7 @@ with RayClusterContext(
 ray.shutdown()
 ```
 
-`RayClusterContext` takes keyword arguments only, and checks them all when it is
+`RayComputeContext` takes keyword arguments only, and checks them all when it is
 built, without touching Ray. A bad value raises a `ValueError` that names the
 keyword. Entering the `with` block starts the cluster and waits until it is ready;
 leaving it stops the cluster. `ctx.start()` and `ctx.stop()` do the same without a
@@ -119,7 +119,7 @@ absolute path. The scheme picks the backend:
 - no scheme: a path on the local disk of each node
 
 ```py
-RayClusterContext(
+RayComputeContext(
     license="/path/to/license.json",
     shuffle_data="s3://bucket/shuffle",
     anonymous_results="s3://bucket/results",
@@ -177,9 +177,9 @@ over TLS. `Tls(..., auth=Jwks(url=..., issuer=..., audience=...))` also makes
 both require a JWT validated against that JWKS endpoint:
 
 ```py
-from polars_nanook_ray import Jwks, RayClusterContext, Tls
+from polars_nanook_ray import Jwks, RayComputeContext, Tls
 
-RayClusterContext(
+RayComputeContext(
     license="/path/to/license.json",
     tls=Tls(
         cert_file="/etc/polars/cert.pem",
@@ -248,10 +248,10 @@ To attach to a running cluster from another script, connect by name:
 ```py
 import ray
 
-from polars_nanook_ray import RayClusterContext
+from polars_nanook_ray import RayComputeContext
 
 ray.init(address="auto")
-ctx = RayClusterContext.connect("polars-nanook")
+ctx = RayComputeContext.connect("polars-nanook")
 print(ctx.client_addr)
 ctx.stop()
 ```
@@ -312,9 +312,9 @@ names that are not worker actors.
 > ```
 
 ```py
-from polars_nanook_ray import Autoscale, RayClusterContext
+from polars_nanook_ray import Autoscale, RayComputeContext
 
-RayClusterContext(
+RayComputeContext(
     license="/path/to/license.json",
     workers=2,
     autoscale=Autoscale(min_workers=1, max_workers=16),
@@ -347,7 +347,7 @@ and `worker_overrides`. These are merged into the engine's TOML configuration
 last: mappings merge, `None` deletes a key, and any other value replaces it.
 
 ```py
-RayClusterContext(
+RayComputeContext(
     license="/path/to/license.json",
     scheduler_overrides={"scheduler": {"default_partitions_per_worker": 4}},
     worker_overrides={"worker": {"heartbeat_period": "10s"}},
@@ -371,10 +371,10 @@ mappings, so a whole cluster can come from a YAML file:
 ```py
 import yaml
 
-from polars_nanook_ray import RayClusterContext
+from polars_nanook_ray import RayComputeContext
 
 with open("cluster.yaml") as f:
-    ctx = RayClusterContext(**yaml.safe_load(f))
+    ctx = RayComputeContext(**yaml.safe_load(f))
 ```
 
 ```yaml

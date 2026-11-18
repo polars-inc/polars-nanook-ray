@@ -60,7 +60,7 @@ def _parse_storage(value: typing.Any) -> typing.Any:
 
 
 class ClusterSpec(BaseModel):
-    """Everything a cluster is built from; see `RayClusterContext` for the keywords."""
+    """Everything a cluster is built from; see `RayComputeContext` for the keywords."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -165,7 +165,7 @@ def build_spec(
     scheduler_overrides: typing.Mapping[str, typing.Any] | None = None,
     worker_overrides: typing.Mapping[str, typing.Any] | None = None,
 ) -> ClusterSpec:
-    """Parse and validate the keywords of `RayClusterContext`.
+    """Parse and validate the keywords of `RayComputeContext`.
 
     Raises `ValueError` naming the keyword at fault.
     """

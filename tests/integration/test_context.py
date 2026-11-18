@@ -4,12 +4,12 @@ import urllib.request
 import pytest
 import ray
 
-from polars_nanook_ray import Ports, RayClusterContext
+from polars_nanook_ray import Ports, RayComputeContext
 
 from .conftest import ContextFactory, TestQuery, make_context, name_of
 
 
-def test_ray_cluster_context(run_query: TestQuery) -> None:
+def test_ray_compute_context(run_query: TestQuery) -> None:
     ray.init(address="auto", ignore_reinit_error=True)
     try:
         with make_context(workers=1) as ctx:
@@ -29,7 +29,7 @@ def test_connect_from_another_driver(
     ray.shutdown()  # the driver that started it exits, the cluster stays up
     ray.init(address="auto")
 
-    connected = RayClusterContext.connect(name_of(ctx))
+    connected = RayComputeContext.connect(name_of(ctx))
 
     assert connected.client_addr == client_addr
     assert run_query(connected) is not None

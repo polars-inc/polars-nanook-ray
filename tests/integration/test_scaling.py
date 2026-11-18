@@ -6,7 +6,7 @@ import urllib.request
 import pytest
 import ray
 
-from polars_nanook_ray import Autoscale, RayClusterContext
+from polars_nanook_ray import Autoscale, RayComputeContext
 from polars_nanook_ray._engine import SCALER_HOST
 from polars_nanook_ray.identity import WorkerId, list_workers
 
@@ -109,7 +109,7 @@ def test_repeated_upscale_adds_no_extra_workers(ray_cluster: ContextFactory) -> 
     assert _wait_for_workers(namespace, 3) == _workers_named(0, 1, 2)
 
 
-def _scaler_port(cluster: RayClusterContext) -> int | None:
+def _scaler_port(cluster: RayComputeContext) -> int | None:
     return ray.get(scheduler_actor(cluster).scaler_port.remote(), timeout=30)
 
 

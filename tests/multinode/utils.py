@@ -10,7 +10,7 @@ import ray
 from ray.actor import ActorHandle
 from ray.cluster_utils import Cluster
 
-from polars_nanook_ray import Ports, RayClusterContext
+from polars_nanook_ray import Ports, RayComputeContext
 from polars_nanook_ray.actors import (
     PolarsSchedulerActor,
     resolve_actor_handles,
@@ -72,7 +72,7 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def make_context(**keywords: typing.Any) -> RayClusterContext:
+def make_context(**keywords: typing.Any) -> RayComputeContext:
     # an engine that listens, or its actor fails to start
     keywords.setdefault("binary_path", str(LISTENING_ENGINE))
     keywords.setdefault("license", "/nonexistent.json")
@@ -81,15 +81,15 @@ def make_context(**keywords: typing.Any) -> RayClusterContext:
     keywords.setdefault("memory", 1 / 1024**3)
     keywords.setdefault("observatory", False)
     keywords.setdefault("ports", Ports(client=None, dashboard=None))
-    return RayClusterContext(**keywords)
+    return RayComputeContext(**keywords)
 
 
-def name_of(ctx: RayClusterContext) -> str:
+def name_of(ctx: RayComputeContext) -> str:
     return ctx._spec.name
 
 
 def run_scheduler(
-    ctx: RayClusterContext, max_restarts: int = 0
+    ctx: RayComputeContext, max_restarts: int = 0
 ) -> typing.Iterator[ActorHandle]:
     """Yield a scheduler actor on the head node, then stop it and its workers."""
     actor = PolarsSchedulerActor.options(  # type: ignore[attr-defined]

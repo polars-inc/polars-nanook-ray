@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 STARTUP_GRACE = 10.0
 
 
-class RayClusterContext(ClusterContext):
+class RayComputeContext(ClusterContext):
     """A Polars Nanook cluster on Ray, and the context to run queries on it.
 
     Constructing it validates the keywords only; `start()`, or entering it as a
@@ -42,10 +42,10 @@ class RayClusterContext(ClusterContext):
     import polars as pl
     import ray
 
-    from polars_nanook_ray import RayClusterContext
+    from polars_nanook_ray import RayComputeContext
 
     ray.init(address="auto")
-    with RayClusterContext(license="/etc/polars/license.json", workers=4) as ctx:
+    with RayComputeContext(license="/etc/polars/license.json", workers=4) as ctx:
         pl.LazyFrame({"a": [1, 2, 3]}).remote(ctx).execute()
     ```
 
