@@ -30,7 +30,7 @@ def _runner(tmp_path: pathlib.Path, script: str) -> SubprocessRunner:
     binary = tmp_path / "binary"
     binary.write_text(f"#!/bin/sh\n{script}\n")
     binary.chmod(0o755)
-    return SubprocessRunner(str(binary), "worker-0", "worker-0")
+    return SubprocessRunner(str(binary), "worker-0")
 
 
 def test_actor_exits_when_its_binary_exits_unasked(

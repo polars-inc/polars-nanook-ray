@@ -938,6 +938,3 @@ class PolarsRayClusterConfig(BaseModel):
             doc["lineage"] = lineage
 
         return toml.dumps(doc)
-
-    def instance_name(self, instance_id: str) -> str:
-        return f"polars-nanook-ray-{self.cluster_id}-{instance_id}"
