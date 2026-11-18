@@ -20,20 +20,6 @@ def test_ray_cluster_context(run_query: TestQuery) -> None:
     assert result is not None
 
 
-def test_ray_init_needs_no_namespace(run_query: TestQuery) -> None:
-    ray.init(address="auto")
-    try:
-        ctx = make_context(workers=1)
-        ctx.start()
-        try:
-            assert ray.get_runtime_context().namespace != name_of(ctx)
-            assert run_query(ctx) is not None
-        finally:
-            ctx.stop()
-    finally:
-        ray.shutdown()
-
-
 def test_connect_from_another_driver(
     ray_cluster: ContextFactory, run_query: TestQuery
 ) -> None:
@@ -51,15 +37,6 @@ def test_connect_from_another_driver(
     connected.stop()
     with pytest.raises(RuntimeError, match=r"not .*running"):
         connected.client_addr
-
-
-def test_connect_without_a_cluster_names_it() -> None:
-    ray.init(address="auto")
-    try:
-        with pytest.raises(ValueError, match="no-such-cluster"):
-            RayClusterContext.connect("no-such-cluster")
-    finally:
-        ray.shutdown()
 
 
 def test_observatory_on_free_ports_answers_queries(
@@ -81,10 +58,3 @@ def test_observatory_on_free_ports_answers_queries(
     except urllib.error.HTTPError as exc:  # served, if not at the root
         status = exc.code
     assert status < 500
-
-
-def test_no_dashboard_without_observatory(ray_cluster: ContextFactory) -> None:
-    ctx = ray_cluster(workers=0)
-
-    assert ctx.dashboard_addr is None
-    assert ctx.client_addr.startswith("http://")

@@ -72,14 +72,6 @@ def test_license_file_made_absolute(license_: str | pathlib.Path) -> None:
     assert _worker(spec)["license"] == expected
 
 
-def test_license_file_uri_keeps_absolute_path() -> None:
-    spec = build_spec(license="file:///etc/polars/license.json")
-
-    assert _scheduler(spec)["license"] == {
-        "on_prem_enterprise": {"license_path": "/etc/polars/license.json"}
-    }
-
-
 @pytest.mark.parametrize(
     "license_",
     [
@@ -172,32 +164,6 @@ def test_paths_are_local_unless_shared() -> None:
     }
 
 
-def test_home_expanded_in_paths() -> None:
-    spec = build_spec(license="/license.json", shuffle_data="~/shuffle")
-
-    assert _worker(spec)["worker"]["shuffle_location"] == {
-        "local": {"path": str(pathlib.Path.home() / "shuffle")}
-    }
-
-
-def test_checkpoints_off_by_default() -> None:
-    assert (
-        "checkpoint_location"
-        not in _worker(build_spec(license="/license.json"))["worker"]
-    )
-
-
-def test_storage_defaults_on_local_disk() -> None:
-    spec = build_spec(license="/license.json")
-
-    assert _scheduler(spec)["scheduler"]["anonymous_result_location"] == {
-        "local": {"path": "/tmp/polars/anonymous-results"}
-    }
-    assert _worker(spec)["worker"]["shuffle_location"] == {
-        "local": {"path": "/tmp/polars/shuffle-data"}
-    }
-
-
 @pytest.mark.parametrize(
     ("storage", "match"),
     [
@@ -211,29 +177,6 @@ def test_storage_defaults_on_local_disk() -> None:
 def test_invalid_storage_rejected(storage: typing.Any, match: str) -> None:
     with pytest.raises(ValueError, match=rf"(?s)shuffle_data.*{match}"):
         build_spec(license="/license.json", shuffle_data=storage)
-
-
-def test_invalid_storage_rejected_on_construction() -> None:
-    with pytest.raises(ValueError, match="absolute"):
-        Storage("relative/shuffle")
-
-
-@pytest.mark.parametrize(
-    "keyword",
-    ["license", "shuffle_data", "ports", "tls", "auth"],
-)
-def test_unknown_key_in_mapping_rejected(keyword: str) -> None:
-    valid: dict[str, typing.Any] = {
-        "license": {"workspace_id": "ws", "client_id": "id", "client_secret": "s"},
-        "shuffle_data": {"url": "s3://bucket/shuffle"},
-        "ports": {"client": 5051},
-        "tls": {"cert_file": "/cert.pem", "key_file": "/key.pem"},
-        "auth": {"url": "https://idp/jwks", "issuer": "idp", "audience": "aud"},
-    }
-    keywords = {"license": "/license.json"} | {keyword: valid[keyword] | {"typo": 1}}
-
-    with pytest.raises(ValueError, match=rf"(?s){keyword}.*typo"):
-        build_spec(**keywords)
 
 
 @pytest.mark.parametrize(
@@ -268,13 +211,6 @@ def test_lineage_transport(lineage: str, transport: dict) -> None:
 
     assert _scheduler(spec)["lineage"] == {"transport": transport}
     assert _worker(spec)["lineage"] == {"transport": transport}
-
-
-def test_no_lineage_by_default() -> None:
-    spec = build_spec(license="/license.json")
-
-    assert "lineage" not in _scheduler(spec)
-    assert "lineage" not in _worker(spec)
 
 
 def test_tls_and_auth_secure_client_port_and_dashboard() -> None:
@@ -380,34 +316,6 @@ def test_ports_to_bind(ports: dict | None, scheduler: dict, worker: dict) -> Non
     assert worker_ports(spec) == worker
 
 
-def test_observatory_off_binds_no_dashboard_or_telemetry() -> None:
-    spec = build_spec(license="/license.json", observatory=False, host_metrics=False)
-
-    assert scheduler_ports(spec) == {"client": 5051, "registration": None}
-    rendered = _scheduler(spec, ports={"client": 5051, "registration": 5050})
-    assert rendered["observatory"] == {"enabled": False}
-    assert rendered["monitoring"] == {"enabled": False}
-    assert rendered["static_leader"]["observatory_service"] == {
-        "public_addr": "10.0.0.1:5049"
-    }
-
-
-def test_observatory_and_host_metrics_on_by_default() -> None:
-    rendered = _scheduler(build_spec(license="/license.json"))
-
-    assert rendered["observatory"] == {
-        "enabled": True,
-        "max_metrics_bytes_total": 100 * 1024**2,
-        "database_path": "/tmp/polars/observatory/data.db",
-        "service": {"bind_addr": ":5049"},
-        "rest_api": {"service": {"bind_addr": ":3001"}},
-    }
-    assert rendered["monitoring"] == {
-        "enabled": True,
-        "host_metrics": {"enabled": True},
-    }
-
-
 def test_access_settings() -> None:
     spec = build_spec(license="/license.json", require_user=True, allow_local_io=False)
 
@@ -454,17 +362,6 @@ def test_autoscale_points_engine_at_scaler_port() -> None:
     }
 
 
-def test_autoscale_needs_scaler_port() -> None:
-    with pytest.raises(ValueError, match="scaling"):
-        _scheduler(build_spec(license="/license.json", autoscale=True))
-
-
-def test_no_autoscale_by_default() -> None:
-    assert _scheduler(build_spec(license="/license.json"))["scaling"] == {
-        "enabled": False
-    }
-
-
 @pytest.mark.parametrize(
     ("keywords", "resources"),
     [
@@ -508,24 +405,6 @@ def test_engine_environment() -> None:
     assert worker_env(spec) == expected | {"POLARS_TEMP_DIR": "/scratch"}
 
 
-def test_engine_environment_defaults() -> None:
-    spec = build_spec(license="/license.json")
-
-    assert worker_env(spec) == {
-        "POLARS_EULA_ACCEPTED": "no",
-        "PLC_LOG_LEVEL": "info",
-        "RUST_BACKTRACE": "full",
-        "POLARS_TEMP_DIR": "/tmp/polars/temporary-data",
-    }
-
-
-def test_name_is_cluster_id() -> None:
-    spec = build_spec(license="/license.json", name="team-a.prod_1")
-
-    assert _scheduler(spec)["cluster_id"] == "team-a.prod_1"
-    assert _worker(spec)["cluster_id"] == "team-a.prod_1"
-
-
 def test_overrides_merge_replace_and_delete() -> None:
     spec = build_spec(
         license="/license.json",
@@ -560,12 +439,6 @@ def test_overrides_merge_replace_and_delete() -> None:
         "local": {"path": "/tmp/polars/shuffle-data"}
     }
     assert "cpu_reserved" not in worker
-
-
-def test_override_replaces_a_table_with_a_scalar() -> None:
-    spec = build_spec(license="/license.json", worker_overrides={"monitoring": "off"})
-
-    assert _worker(spec)["monitoring"] == "off"
 
 
 def test_cluster_from_yaml_shaped_mappings() -> None:

@@ -153,12 +153,12 @@ Every port the engines listen on is set in one place, `ports`:
 from polars_nanook_ray import Ports
 
 ports = Ports(
-    client=5051,        # scheduler: query submission
-    dashboard=3001,     # scheduler: observatory dashboard and REST API
+    client=5051,  # scheduler: query submission
+    dashboard=3001,  # scheduler: observatory dashboard and REST API
     registration=5050,  # scheduler: workers register here
-    telemetry=5049,     # scheduler: OpenTelemetry traces and metrics
-    task=5052,          # each worker: tasks from the scheduler
-    shuffle=5053,       # each worker: shuffle data from other workers
+    telemetry=5049,  # scheduler: OpenTelemetry traces and metrics
+    task=5052,  # each worker: tasks from the scheduler
+    shuffle=5053,  # each worker: shuffle data from other workers
 )
 ```
 
