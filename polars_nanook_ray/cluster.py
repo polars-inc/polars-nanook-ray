@@ -1,23 +1,24 @@
+import contextlib
 import logging
 import time
 import typing
 
 import ray
-from ray.exceptions import GetTimeoutError
+from ray.exceptions import GetTimeoutError, RayError
 
 from polars_nanook_ray.actors import (
-    WORKER_NAME_PREFIX,
     PolarsScalerActor,
     PolarsSchedulerActor,
-    PolarsWorkerActor,
-    list_actor_names,
+    list_worker_names,
+    plan_workers,
     resolve_actor_handles,
     resolve_scaler_name,
     resolve_scheduler_name,
-    resolve_worker_name,
+    start_worker,
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import placement_options
+from polars_nanook_ray.actors.placement import check_room
 from polars_nanook_ray.config import PolarsRayClusterConfig
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class PolarsRayCluster:
 
         self._scaler_actor: typing.Any = None
         self._scheduler_actor: typing.Any = None
-        self._worker_actors: list[typing.Any] = []
+        self._worker_actors: dict[str, typing.Any] = {}
 
     def _actor_exists(self, name: str) -> bool:
         try:
@@ -112,7 +113,7 @@ class PolarsRayCluster:
             **self._scheduler_options(),
         ).remote(self.config)
 
-    def _start_workers(self) -> None:
+    def _start_workers(self, running: set[str], names: list[str]) -> None:
         if self._scheduler_actor is None:
             msg = "Cannot start workers: scheduler actor is not available."
             raise RuntimeError(msg)
@@ -122,26 +123,12 @@ class PolarsRayCluster:
             timeout=self.config.actor_response_timeout,
         )
 
-        worker_actors: list[typing.Any] = []
+        worker_actors = resolve_actor_handles(running, self.config.cluster_id)
+        for name in worker_actors:
+            logger.info("Reconnected to existing worker %s", name)
 
-        for worker_id in range(self.config.num_workers):
-            actor_name = resolve_worker_name(worker_id)
-
-            try:
-                actor = ray.get_actor(actor_name, namespace=self.config.cluster_id)
-                logger.info("Reconnected to existing worker %s", actor_name)
-            except ValueError:
-                actor = PolarsWorkerActor.options(  # type: ignore[attr-defined]
-                    name=actor_name,
-                    namespace=self.config.cluster_id,
-                    lifetime="detached",
-                    max_restarts=self.config.worker_max_restarts,
-                    num_cpus=self.config.worker.cpus_hint,
-                    memory=self.config.worker.memory_hint,
-                ).remote(self.config, worker_id, scheduler_host)
-                logger.info("Worker %s started", actor_name)
-
-            worker_actors.append(actor)
+        for name in names:
+            worker_actors[name] = start_worker(self.config, name, scheduler_host)
 
         self._worker_actors = worker_actors
 
@@ -197,7 +184,7 @@ class PolarsRayCluster:
             len(self._worker_actors),
         )
 
-        pending: dict[int, typing.Any] = dict(enumerate(self._worker_actors))
+        pending = dict(self._worker_actors)
 
         deadline = time.monotonic() + self.config.startup_timeout
         while pending and (remaining := deadline - time.monotonic()) > 0:
@@ -209,22 +196,25 @@ class PolarsRayCluster:
             except GetTimeoutError:
                 break
 
-            for worker_id, worker_ready in zip(
+            for name, worker_ready in zip(
                 list(pending.keys()),
                 readiness,
                 strict=True,
             ):
                 if worker_ready:
-                    logger.info("Worker %s is ready", resolve_worker_name(worker_id))
-                    pending.pop(worker_id)
+                    logger.info("Worker %s is ready", name)
+                    pending.pop(name)
 
             if pending:
                 time.sleep(0.5)
 
         if pending:
             msg = (
-                f"Workers {[resolve_worker_name(worker_id) for worker_id in pending]} "
-                f"did not start within {self.config.startup_timeout}s"
+                f"Workers {sorted(pending)} "
+                f"did not start within {self.config.startup_timeout}s; they may be "
+                f"waiting for a Ray node with {self.config.worker.cpus_hint:g} CPU and "
+                f"{self.config.worker.memory_hint / 1024**3:g} GiB of memory free, "
+                "and Ray's autoscaler may be adding nodes: see `ray status`."
             )
             raise RuntimeError(msg)
 
@@ -266,9 +256,19 @@ class PolarsRayCluster:
         )
 
     def start(self) -> None:
-        """Start (or reconnect to) our various actors; block until ready."""
-        scheduler_exists = self._actor_exists(resolve_scheduler_name())
-        if not scheduler_exists:
+        """Start (or reconnect to) our various actors; block until ready.
+
+        Tops the worker pool up to `num_workers`, keeping any worker already running,
+        so reconnecting never adds workers. Fails right away if a worker's
+        `cpus_hint` and `memory_hint` exceed those of every alive Ray node; workers
+        that fit a busy node wait for Ray to have room for them.
+        """
+        running = list_worker_names(self.config.cluster_id)
+        if self.config.num_workers > len(running):
+            check_room(self.config.worker.cpus_hint, self.config.worker.memory_hint)
+        names = plan_workers(self.config.num_workers, running)
+
+        if not self._actor_exists(resolve_scheduler_name()):
             self._scheduler_options()  # fail before the scaler is created
 
         if self.config.scheduler.scaling.enabled:
@@ -276,7 +276,7 @@ class PolarsRayCluster:
             self._wait_for_scaler()
 
         self._start_scheduler()
-        self._start_workers()
+        self._start_workers(running, names)
 
         self._wait_for_scheduler()
         self._wait_for_workers()
@@ -316,14 +316,21 @@ class PolarsRayCluster:
                 )
                 self._scaler_actor = None
 
-        worker_names = list_actor_names(self.config.cluster_id, WORKER_NAME_PREFIX)
-        self._worker_actors = list(
-            resolve_actor_handles(worker_names, self.config.cluster_id).values()
+        if self._scheduler_actor is not None:
+            # or the scheduler replaces the workers stopped below
+            with contextlib.suppress(RayError):
+                ray.get(
+                    self._scheduler_actor.stop_reconciling.remote(),
+                    timeout=self.config.actor_response_timeout,
+                )
+
+        workers = resolve_actor_handles(
+            list_worker_names(self.config.cluster_id), self.config.cluster_id
         )
-        if self._worker_actors:
-            logger.info("Stopping %d worker(s)...", len(self._worker_actors))
-            terminate_actors(self._worker_actors, self.config.actor_response_timeout)
-            self._worker_actors = []
+        if workers:
+            logger.info("Stopping %d worker(s)...", len(workers))
+            terminate_actors(list(workers.values()), self.config.actor_response_timeout)
+        self._worker_actors = {}
 
         if self._scheduler_actor is not None:
             logger.info("Stopping scheduler...")

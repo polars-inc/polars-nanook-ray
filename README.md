@@ -138,7 +138,33 @@ ray.shutdown()
 
 Each worker picks free ports on its node, so several workers can share a host.
 To fix them instead, for firewall rules, set `task_port` and `shuffle_port` on
-`PolarsWorkerConfig`; workers then need a node each.
+`PolarsWorkerConfig`. Ray spreads the workers over the nodes as best it can, but
+may still put two on one node; with fixed ports the second then fails to start,
+with a `PortInUseError`. Leave them unset unless every node has room for one
+worker only.
+
+## Worker placement
+
+Ray places the workers, as it does Spark executors in RayDP: each worker actor
+requests `cpus_hint` and `memory_hint` and uses Ray's `SPREAD` scheduling
+strategy, without pinning to a node. Ray puts it on a node with that much free,
+taking the nodes in turn; this is best-effort, and a node with room for several
+may get several, and nodes without CPUs, like a head started with
+`--num-cpus=0`, get none unless `cpus_hint=0`. Nodes are listed with
+`ray.nodes()`, so neither `start()` nor `stop()` needs the Ray dashboard.
+
+A worker for which no node has room yet waits, as Ray demand: Ray's autoscaler, if
+the Ray cluster has one, adds a node for it. It counts as one of the cluster's
+workers meanwhile, and `start()` reports it if it is still waiting at
+`startup_timeout`. Only a worker larger than every alive node fails `start()` right
+away, naming the request and the largest node.
+
+Workers are named by index, `worker-0`, `worker-1`, ..., each new one taking the
+lowest free index; the name says nothing of the node. Starting a worker whose name
+is taken returns the existing one, so repeated scale-ups and reconnects never add
+workers: `start()` only tops the pool up to `num_workers`. Each start of a worker's
+engine registers with the scheduler under a new instance ID, e.g.
+`worker-0-1a2b3c4d`.
 
 The actors are running in `detached` mode and survive past the script: one can
 reconnect with the same `ray.init()` and `cluster` gymnastics from another

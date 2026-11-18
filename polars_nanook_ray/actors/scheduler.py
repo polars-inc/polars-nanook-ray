@@ -1,24 +1,25 @@
 import logging
 import os
+import threading
 import typing
 
 import ray
 
+from polars_nanook_ray.actors.placement import (
+    WorkerPoolReconciler,
+    by_index,
+    list_worker_names,
+    plan_workers,
+)
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _remove_config,
     _resolve_config_path,
     _write_config,
-    list_actor_names,
     resolve_actor_handles,
     terminate_actors,
 )
-from polars_nanook_ray.actors.worker import (
-    WORKER_NAME_PREFIX,
-    PolarsWorkerActor,
-    _resolve_worker_name_regex,
-    resolve_worker_name,
-)
+from polars_nanook_ray.actors.worker import start_worker
 from polars_nanook_ray.config import PolarsRayClusterConfig
 from polars_nanook_ray.engine_instance_id import EngineInstanceId
 from polars_nanook_ray.ports import resolve_ports
@@ -68,25 +69,35 @@ class PolarsSchedulerActor:
 
         self.scheduler_host: str = self._runner.host
 
+        self._reconciling = threading.Event()
         self.start()
         _handle_sigterm(self.stop)
 
+        if config.worker_reconcile_interval > 0:
+            self._reconciler = WorkerPoolReconciler(
+                config.worker_reconcile_interval,
+                start=self._start_worker,
+                running=self._list_workers,
+            )
+            threading.Thread(
+                target=self._reconcile_workers, name="reconcile-workers", daemon=True
+            ).start()
+
+    def _start_worker(self, name: str) -> None:
+        start_worker(self.config_cluster, name, self.scheduler_host)
+
+    def _list_workers(self) -> set[str]:
+        return list_worker_names(self.config_cluster.cluster_id)
+
+    def _reconcile_workers(self) -> None:
+        while not self._reconciling.wait(self._reconciler.interval):
+            try:
+                self._reconciler.reconcile(self.num_workers)
+            except Exception:
+                logger.exception("Could not reconcile the worker pool")
+
     def __ray_shutdown__(self) -> None:
         self.stop()
-
-    def _add_worker(self, worker_id: int) -> None:
-        actor_name = resolve_worker_name(worker_id)
-
-        PolarsWorkerActor.options(  # type: ignore[attr-defined]
-            name=actor_name,
-            namespace=self.config_cluster.cluster_id,
-            lifetime="detached",
-            max_restarts=self.config_cluster.worker_max_restarts,
-            num_cpus=self.config_cluster.worker.cpus_hint,
-            memory=self.config_cluster.worker.memory_hint,
-        ).remote(self.config_cluster, worker_id, self.scheduler_host)
-
-        logger.info("Requested new worker %s", actor_name)
 
     def _remove_workers(self, worker_actor_names: set[str]) -> None:
         actors = resolve_actor_handles(
@@ -126,8 +137,13 @@ class PolarsSchedulerActor:
 
         self._runner.start(self._config_path, env)
 
+    def stop_reconciling(self) -> None:
+        """Stop reconciling the worker pool, before the workers are stopped."""
+        self._reconciling.set()
+
     def stop(self) -> None:
         """Terminate the scheduler process and clean up."""
+        self.stop_reconciling()
         self._runner.stop()
 
         _remove_config(self._config_path)
@@ -167,9 +183,7 @@ class PolarsSchedulerActor:
     def get_scaling_status(self) -> dict[str, int | set[str] | None]:
         """Return the current/desired worker counts and configured bounds."""
         return {
-            "available": list_actor_names(
-                self.config_cluster.cluster_id, WORKER_NAME_PREFIX
-            ),
+            "available": self._list_workers(),
             "desired": self.num_workers,
             "min": self.config_cluster.min_workers,
             "max": self.config_cluster.max_workers,
@@ -187,8 +201,8 @@ class PolarsSchedulerActor:
         ----------
         num_workers
             The number of worker to upscale or downscale to, clamped to `min_workers`
-            and `max_workers`. If neither `delete` nor `keep` is given, random workers
-            are removed.
+            and `max_workers`. If neither `delete` nor `keep` is given, the workers
+            with the highest indices are removed.
         delete
             Set of worker instances to terminate, as engine instance IDs or actor
             names. Applied before `keep`. Names that are not worker actors are
@@ -216,38 +230,24 @@ class PolarsSchedulerActor:
             )
             num_workers = clamped
 
-        worker_names = list_actor_names(
-            self.config_cluster.cluster_id, WORKER_NAME_PREFIX
-        )
+        # set first, for the reconciler not to replace the workers removed below
+        self.num_workers = num_workers
+
+        worker_names = self._list_workers()
 
         _delete = _resolve_worker_actor_names(delete, worker_names)
         _keep = _resolve_worker_actor_names(keep, worker_names)
 
         if len(worker_names) < num_workers:
-            # offset the id used by each worker to avoid collisions with running worker
-            # names
-            offset = (
-                max(
-                    [
-                        int(m.group(1))
-                        for actor_name in worker_names
-                        if (
-                            (m := _resolve_worker_name_regex().match(actor_name))
-                            is not None
-                        )
-                    ],
-                    default=-1,
-                )
-                + 1
-            )
-            for worker_id in range(num_workers - len(worker_names)):
-                self._add_worker(worker_id + offset)
+            # whether or not a node has room for them yet: Ray's autoscaler may add one
+            for name in plan_workers(num_workers, worker_names):
+                self._start_worker(name)
 
         elif len(worker_names) > num_workers:
             if num_workers == 0:
                 to_remove = set(worker_names)
             elif _delete is None and _keep is None:
-                to_remove = set(list(worker_names)[: len(worker_names) - num_workers])
+                to_remove = set(by_index(worker_names)[num_workers:])
             else:
                 to_remove = set()
                 remaining = worker_names
@@ -258,5 +258,3 @@ class PolarsSchedulerActor:
                     to_remove |= remaining - _keep
 
             self._remove_workers(to_remove)
-
-        self.num_workers = num_workers  # new value

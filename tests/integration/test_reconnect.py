@@ -1,11 +1,7 @@
 import ray
 from polars.testing import assert_frame_equal
 
-from polars_nanook_ray.actors import (
-    SCHEDULER_NAME_PREFIX,
-    WORKER_NAME_PREFIX,
-    list_actor_names,
-)
+from polars_nanook_ray.actors import SCHEDULER_NAME_PREFIX, list_worker_names
 from polars_nanook_ray.cluster import PolarsRayCluster
 
 from .conftest import RayClusterConfigFactory, TestQuery
@@ -24,7 +20,7 @@ def test_reconnect_existing_cluster(
     scheduler0 = ray.get_actor(SCHEDULER_NAME_PREFIX, namespace=config.cluster_id)
     workers0 = [
         ray.get_actor(actor_name, namespace=config.cluster_id)
-        for actor_name in list_actor_names(config.cluster_id, WORKER_NAME_PREFIX)
+        for actor_name in list_worker_names(config.cluster_id)
     ]
     result0 = run_query(cluster=cluster0)
 
@@ -37,7 +33,7 @@ def test_reconnect_existing_cluster(
     scheduler1 = ray.get_actor(SCHEDULER_NAME_PREFIX, namespace=config.cluster_id)
     workers1 = [
         ray.get_actor(actor_name, namespace=config.cluster_id)
-        for actor_name in list_actor_names(config.cluster_id, WORKER_NAME_PREFIX)
+        for actor_name in list_worker_names(config.cluster_id)
     ]
     result1 = run_query(cluster=cluster1)
 
@@ -48,6 +44,29 @@ def test_reconnect_existing_cluster(
         assert result0 is not None
         assert result1 is not None
         assert_frame_equal(result0, result1, check_row_order=False)
+
+        cluster1.stop()
+    finally:
+        ray.shutdown()
+
+
+def test_reconnect_after_upscale_keeps_workers(
+    ray_cluster_config: RayClusterConfigFactory,
+) -> None:
+    config = ray_cluster_config(num_workers=1)
+
+    ray.init(address="auto", namespace=config.cluster_id, ignore_reinit_error=True)
+    try:
+        cluster0 = PolarsRayCluster(config)
+        cluster0.start()
+        cluster0._rescale_worker_pool_to(2)
+        workers0 = list_worker_names(config.cluster_id)
+
+        cluster1 = PolarsRayCluster(config)
+        cluster1.start()
+
+        assert list_worker_names(config.cluster_id) == workers0
+        assert set(cluster1._worker_actors) == workers0
 
         cluster1.stop()
     finally:
