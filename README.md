@@ -190,6 +190,9 @@ Note the cluster always _starts_ `num_workers` workers: the bounds are reported
 back to the binary on `GET /scale_config`, seeded into `max_workers_per_query`,
 and only enforced on rescaling, where a `POST /scale_to` count outside them is
 clamped.
+A scale-down that names no workers to keep or delete removes the highest indices
+first. A scale-up starts workers whether or not a node has room for them yet, so
+an autoscaling Ray cluster grows with the engine's requests.
 Requesting more workers is done via the client: `.distributed(min_workers=X)`.
 
 The HTTP server is unauthenticated and binds `127.0.0.1`. It accepts only
