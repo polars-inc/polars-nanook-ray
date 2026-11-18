@@ -1,7 +1,15 @@
 from polars_nanook_ray.context import RayClusterContext
-from polars_nanook_ray.options import Jwks, Ports, ServiceAccount, Storage, Tls
+from polars_nanook_ray.options import (
+    Autoscale,
+    Jwks,
+    Ports,
+    ServiceAccount,
+    Storage,
+    Tls,
+)
 
 __all__ = [
+    "Autoscale",
     "Jwks",
     "Ports",
     "RayClusterContext",

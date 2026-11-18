@@ -4,6 +4,7 @@ import threading
 import typing
 
 from polars_nanook_ray.identity import WorkerId, identify
+from polars_nanook_ray.options import Autoscale
 
 if typing.TYPE_CHECKING:
     from polars_nanook_ray._spec import ClusterSpec
@@ -108,11 +109,10 @@ class WorkerPool:
     ) -> None:
         """Start or remove workers for the pool to reach `num_workers`.
 
-        `num_workers` is clamped to `min_workers` and `max_workers`. When removing,
-        `delete` names workers to remove, then `keep` workers to keep while removing
-        all the others; both take engine instance IDs or actor names, and ignore other
-        names. Without either, removes the highest indices first. Does nothing once
-        halted.
+        `num_workers` is clamped to the bounds of `autoscale`. When removing, `delete`
+        names workers to remove, then `keep` workers to keep while removing all the
+        others; both take engine instance IDs or actor names, and ignore other names.
+        Without either, removes the highest indices first. Does nothing once halted.
         """
         with self._lock:
             if self._halted.is_set():
@@ -185,7 +185,8 @@ class WorkerPool:
                 logger.exception("Could not reconcile the worker pool")
 
     def _clamp(self, num_workers: int) -> int:
-        low, high = self._spec.min_workers or 0, self._spec.max_workers
+        bounds = self._spec.autoscale or Autoscale()
+        low, high = bounds.min_workers, bounds.max_workers
         clamped = max(low, num_workers if high is None else min(high, num_workers))
         if clamped != num_workers:
             logger.warning(

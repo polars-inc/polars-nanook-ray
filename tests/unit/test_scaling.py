@@ -46,8 +46,8 @@ def serve() -> typing.Iterator[Serve]:
         endpoint.close()
 
 
-def scaling_config(**kwargs: typing.Any) -> ClusterSpec:
-    return config(autoscale=True, **kwargs)
+def scaling_config(**bounds: typing.Any) -> ClusterSpec:
+    return config(autoscale=bounds)
 
 
 def request(

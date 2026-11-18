@@ -118,11 +118,9 @@ def render_scheduler(
         "static_leader": _static_leader(leader),
         "scheduler": _scheduler(spec, ports),
         "observatory": _observatory(spec, ports),
-        "monitoring": _monitoring(spec),
+        "monitoring": _monitoring(),
         "scaling": _scaling(spec, scaler_port),
     }
-    if spec.lineage is not None:
-        doc["lineage"] = _lineage(spec.lineage)
     return toml.dumps(_merge(doc, spec.scheduler_overrides))
 
 
@@ -174,16 +172,12 @@ def render_worker(
         "cluster_mode": "ray",
         "static_leader": _static_leader(scheduler),
         "worker": worker,
-        "monitoring": _monitoring(spec),
+        "monitoring": _monitoring(),
     }
     if spec.cpus:
         doc["cpu_reserved"] = str(spec.cpus)
-    if spec.enforce_memory_limit:
-        doc["memory_limit"] = spec.memory_bytes
     if not isinstance(spec.license, ServiceAccount):
         doc["license"] = _license(spec)
-    if spec.lineage is not None:
-        doc["lineage"] = _lineage(spec.lineage)
     return toml.dumps(_merge(doc, spec.worker_overrides))
 
 
@@ -216,19 +210,20 @@ def _static_leader(leader: SchedulerAddress) -> dict:
 
 def _secured(spec: "ClusterSpec", bind_port: int) -> dict:
     service: dict = {"bind_addr": f":{bind_port}"}
-    if spec.tls is not None:
-        service["connection"] = {
-            "tls": {
-                "certificate_key_file": spec.tls.cert_file,
-                "private_key_file": spec.tls.key_file,
-            }
+    if (tls := spec.tls) is None:
+        return service
+    service["connection"] = {
+        "tls": {
+            "certificate_key_file": tls.cert_file,
+            "private_key_file": tls.key_file,
         }
-    if spec.auth is not None:
+    }
+    if tls.auth is not None:
         service["auth"] = {
             "jwks": {
-                "url": spec.auth.url,
-                "issuers": spec.auth.issuer,
-                "audience": spec.auth.audience,
+                "url": tls.auth.url,
+                "issuers": tls.auth.issuer,
+                "audience": tls.auth.audience,
             }
         }
     return service
@@ -237,15 +232,17 @@ def _secured(spec: "ClusterSpec", bind_port: int) -> dict:
 def _scheduler(spec: "ClusterSpec", ports: typing.Mapping[str, int]) -> dict:
     d: dict = {
         "enabled": True,
-        "allow_local_scans": spec.allow_local_io,
-        "allow_local_sinks": spec.allow_local_io,
-        "deny_anonymous_users": spec.require_user,
+        "allow_local_scans": True,
+        "allow_local_sinks": True,
+        "deny_anonymous_users": False,
         "client_service": _secured(spec, ports["client"]),
         "worker_service": {"bind_addr": f":{ports['registration']}"},
         "anonymous_result_location": _storage(spec.anonymous_results),
     }
-    max_per_query = spec.max_workers or spec.workers
-    default_per_query = spec.workers or spec.min_workers or int(spec.autoscale)
+    max_per_query = default_per_query = spec.workers
+    if (autoscale := spec.autoscale) is not None:
+        max_per_query = autoscale.max_workers or spec.workers
+        default_per_query = spec.workers or autoscale.min_workers or 1
     if max_per_query:
         d["max_workers_per_query"] = max_per_query
     if default_per_query:
@@ -265,14 +262,12 @@ def _observatory(spec: "ClusterSpec", ports: typing.Mapping[str, int]) -> dict:
     }
 
 
-def _monitoring(spec: "ClusterSpec") -> dict:
-    if not spec.host_metrics:
-        return {"enabled": False}
+def _monitoring() -> dict:
     return {"enabled": True, "host_metrics": {"enabled": True}}
 
 
 def _scaling(spec: "ClusterSpec", scaler_port: int | None) -> dict:
-    if not spec.autoscale:
+    if spec.autoscale is None:
         return {"enabled": False}
     if scaler_port is None:
         msg = "autoscaling needs the port serving scaling requests"
@@ -295,12 +290,6 @@ def _storage(storage: "Storage") -> dict:
             if storage.allow_deletes is not None:
                 section["allow_deletes"] = storage.allow_deletes
             return {backend: section | storage.options}
-
-
-def _lineage(lineage: str) -> dict:
-    if lineage in ("stdout", "stderr"):
-        return {"transport": {"stdio": {"output_stream": lineage}}}
-    return {"transport": {"http": {"endpoint": lineage}}}
 
 
 def _merge(base: dict, overrides: typing.Mapping[str, typing.Any]) -> dict:

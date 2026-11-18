@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
 from polars_nanook_ray._engine import SCALER_HOST
 from polars_nanook_ray.actors.pool import WorkerPool
+from polars_nanook_ray.options import Autoscale
 
 if typing.TYPE_CHECKING:
     from polars_nanook_ray._spec import ClusterSpec
@@ -54,13 +55,14 @@ class _ScalingRequestHandler(http.server.BaseHTTPRequestHandler):
             self._respond(500, {"detail": str(exc)})
             return
 
+        bounds = self.server.spec.autoscale or Autoscale()
         self._respond(
             200,
             {
                 "available": len(status.running),
                 "desired": status.target,
-                "min": self.server.spec.min_workers or 0,
-                "max": self.server.spec.max_workers,
+                "min": bounds.min_workers,
+                "max": bounds.max_workers,
             },
         )
 

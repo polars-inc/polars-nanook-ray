@@ -181,7 +181,7 @@ def test_rescale_is_clamped_to_min_and_max_workers(
     requested: int, clamped: int
 ) -> None:
     workers = InMemoryWorkers()
-    worker_pool = pool(workers, autoscale=True, min_workers=1, max_workers=2)
+    worker_pool = pool(workers, autoscale={"min_workers": 1, "max_workers": 2})
 
     worker_pool.rescale(requested)
 

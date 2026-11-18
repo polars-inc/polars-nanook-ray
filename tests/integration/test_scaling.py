@@ -6,7 +6,7 @@ import urllib.request
 import pytest
 import ray
 
-from polars_nanook_ray import RayClusterContext
+from polars_nanook_ray import Autoscale, RayClusterContext
 from polars_nanook_ray._engine import SCALER_HOST
 from polars_nanook_ray.identity import WorkerId, list_workers
 
@@ -125,10 +125,8 @@ def test_scale_config(
     max_workers: int | None,
 ) -> None:
     cluster = ray_cluster(
-        autoscale=True,
+        autoscale=Autoscale(min_workers=0, max_workers=max_workers),
         workers=1,
-        min_workers=0,
-        max_workers=max_workers,
     )
 
     port = _scaler_port(cluster)
@@ -148,7 +146,7 @@ def test_client_autoscaling(
     run_query: TestQuery,
 ) -> None:
     # the engine reaches the scheduler actor on a port picked free
-    cluster = ray_cluster(autoscale=True, workers=0)
+    cluster = ray_cluster(autoscale=Autoscale(), workers=0)
 
     run_query(cluster, min_workers=2, max_workers=2)
 

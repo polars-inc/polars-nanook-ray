@@ -14,7 +14,7 @@ from polars_nanook_ray._engine import (
     worker_ports,
 )
 from polars_nanook_ray._spec import build_spec
-from polars_nanook_ray.options import ServiceAccount, Storage
+from polars_nanook_ray.options import Autoscale, Jwks, ServiceAccount, Storage, Tls
 
 if typing.TYPE_CHECKING:
     from polars_nanook_ray._spec import ClusterSpec
@@ -182,13 +182,10 @@ def test_invalid_storage_rejected(storage: typing.Any, match: str) -> None:
 @pytest.mark.parametrize(
     ("keywords", "match"),
     [
-        ({"min_workers": 1}, "`min_workers` requires `autoscale=True`"),
-        ({"max_workers": 4}, "`max_workers` requires `autoscale=True`"),
         ({"name": "my/cluster"}, "name"),
         ({"name": "-cluster"}, "name"),
         ({"workers": -1}, "workers"),
         ({"reconcile_interval": -1}, "reconcile_interval"),
-        ({"lineage": "kafka://broker"}, "lineage"),
         ({"spill_dir": "spill"}, "spill_dir"),
         ({"log_level": "warn"}, "log_level"),
     ],
@@ -198,26 +195,14 @@ def test_invalid_keywords_rejected(keywords: dict, match: str) -> None:
         build_spec(license="/license.json", **keywords)
 
 
-@pytest.mark.parametrize(
-    ("lineage", "transport"),
-    [
-        ("stdout", {"stdio": {"output_stream": "stdout"}}),
-        ("stderr", {"stdio": {"output_stream": "stderr"}}),
-        ("https://lineage.example", {"http": {"endpoint": "https://lineage.example"}}),
-    ],
-)
-def test_lineage_transport(lineage: str, transport: dict) -> None:
-    spec = build_spec(license="/license.json", lineage=lineage)
-
-    assert _scheduler(spec)["lineage"] == {"transport": transport}
-    assert _worker(spec)["lineage"] == {"transport": transport}
-
-
 def test_tls_and_auth_secure_client_port_and_dashboard() -> None:
     spec = build_spec(
         license="/license.json",
-        tls={"cert_file": "/cert.pem", "key_file": "/key.pem"},
-        auth={"url": "https://idp/jwks", "issuer": "https://idp", "audience": "aud"},
+        tls=Tls(
+            cert_file="/cert.pem",
+            key_file="/key.pem",
+            auth=Jwks(url="https://idp/jwks", issuer="https://idp", audience="aud"),
+        ),
     )
 
     rendered = _scheduler(spec)
@@ -316,29 +301,20 @@ def test_ports_to_bind(ports: dict | None, scheduler: dict, worker: dict) -> Non
     assert worker_ports(spec) == worker
 
 
-def test_access_settings() -> None:
-    spec = build_spec(license="/license.json", require_user=True, allow_local_io=False)
-
-    scheduler = _scheduler(spec)["scheduler"]
-    assert scheduler["deny_anonymous_users"] is True
-    assert scheduler["allow_local_scans"] is False
-    assert scheduler["allow_local_sinks"] is False
-
-
 @pytest.mark.parametrize(
     ("keywords", "per_query"),
     [
         ({}, {"max_workers_per_query": 1, "default_workers_per_query": 1}),
         ({"workers": 4}, {"max_workers_per_query": 4, "default_workers_per_query": 4}),
         (
-            {"workers": 2, "autoscale": True, "max_workers": 8},
+            {"workers": 2, "autoscale": Autoscale(max_workers=8)},
             {"max_workers_per_query": 8, "default_workers_per_query": 2},
         ),
         (
-            {"workers": 0, "autoscale": True, "min_workers": 3},
+            {"workers": 0, "autoscale": Autoscale(min_workers=3)},
             {"default_workers_per_query": 3},
         ),
-        ({"workers": 0, "autoscale": True}, {"default_workers_per_query": 1}),
+        ({"workers": 0, "autoscale": Autoscale()}, {"default_workers_per_query": 1}),
         ({"workers": 0}, {}),
     ],
 )
@@ -352,7 +328,7 @@ def test_workers_per_query(keywords: dict, per_query: dict) -> None:
 
 
 def test_autoscale_points_engine_at_scaler_port() -> None:
-    spec = build_spec(license="/license.json", autoscale=True)
+    spec = build_spec(license="/license.json", autoscale=Autoscale())
 
     rendered = _scheduler(spec, scaler_port=41234)
 
@@ -368,10 +344,6 @@ def test_autoscale_points_engine_at_scaler_port() -> None:
         ({}, {"cpu_reserved": "1.0"}),
         ({"cpus": 0}, {}),
         ({"cpus": 2.5, "memory": 4}, {"cpu_reserved": "2.5"}),
-        (
-            {"memory": 0.5, "enforce_memory_limit": True},
-            {"cpu_reserved": "1.0", "memory_limit": 512 * 1024**2},
-        ),
     ],
 )
 def test_worker_resources(keywords: dict, resources: dict) -> None:
@@ -452,8 +424,11 @@ def test_cluster_from_yaml_shaped_mappings() -> None:
         "shuffle_data": {"url": "s3://bucket/shuffle", "options": {"aws_region": "x"}},
         "anonymous_results": "gs://bucket/results",
         "ports": {"client": 6051, "task": 6000},
-        "tls": {"cert_file": "/cert.pem", "key_file": "/key.pem"},
-        "auth": {"url": "https://idp/jwks", "issuer": "idp", "audience": "aud"},
+        "tls": {
+            "cert_file": "/cert.pem",
+            "key_file": "/key.pem",
+            "auth": {"url": "https://idp/jwks", "issuer": "idp", "audience": "aud"},
+        },
         "scheduler_overrides": {"scheduler": {"default_partitions_per_worker": 4}},
     }
 

@@ -5,9 +5,9 @@ import pathlib
 import typing
 import urllib.parse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from polars_nanook_ray.options import Jwks, Ports, ServiceAccount, Storage, Tls
+from polars_nanook_ray.options import Autoscale, Ports, ServiceAccount, Storage, Tls
 
 # advertised by every Ray head node, see `ray._private.ray_constants`
 HEAD_NODE_RESOURCE = "node:__internal_head__"
@@ -69,18 +69,12 @@ class ClusterSpec(BaseModel):
     workers: int = Field(default=1, ge=0)
     cpus: float = Field(default=1, ge=0)
     memory: float = Field(default=2, ge=0)
-    enforce_memory_limit: bool = False
-    autoscale: bool = False
-    min_workers: int | None = Field(default=None, ge=0)
-    max_workers: int | None = Field(default=None, ge=0)
+    autoscale: Autoscale | None = None
     shuffle_data: Storage = Storage("/tmp/polars/shuffle-data")
     anonymous_results: Storage = Storage("/tmp/polars/anonymous-results")
     spill_dir: str = "/tmp/polars/temporary-data"
     ports: Ports = Ports()
     tls: Tls | None = None
-    auth: Jwks | None = None
-    require_user: bool = False
-    allow_local_io: bool = True
     worker_max_restarts: int = Field(default=3, ge=-1)
     scheduler_max_restarts: int = Field(default=3, ge=-1)
     reconcile_interval: float = Field(default=10.0, ge=0)
@@ -90,8 +84,6 @@ class ClusterSpec(BaseModel):
     env_vars: dict[str, str] = Field(default_factory=dict)
     log_level: typing.Literal["info", "debug", "trace"] = "info"
     observatory: bool = True
-    host_metrics: bool = True
-    lineage: str | None = None
     scheduler_overrides: dict[str, typing.Any] = Field(default_factory=dict)
     worker_overrides: dict[str, typing.Any] = Field(default_factory=dict)
 
@@ -140,25 +132,6 @@ class ClusterSpec(BaseModel):
     def _empty(cls, value: typing.Any) -> typing.Any:
         return {} if value is None else value
 
-    @field_validator("lineage")
-    @classmethod
-    def _lineage(cls, value: str | None) -> str | None:
-        if value is None or value in ("stdout", "stderr"):
-            return value
-        if urllib.parse.urlparse(value).scheme in ("http", "https"):
-            return value
-        msg = f'expected "stdout", "stderr" or an http(s) URL, got {value!r}'
-        raise ValueError(msg)
-
-    @model_validator(mode="after")
-    def _bounds_need_autoscale(self) -> "ClusterSpec":
-        if not self.autoscale:
-            for keyword in ("min_workers", "max_workers"):
-                if getattr(self, keyword) is not None:
-                    msg = f"`{keyword}` requires `autoscale=True`"
-                    raise ValueError(msg)
-        return self
-
 
 StorageLike: typing.TypeAlias = (
     str | os.PathLike[str] | Storage | typing.Mapping[str, typing.Any]
@@ -172,18 +145,12 @@ def build_spec(
     workers: int = 1,
     cpus: float = 1,
     memory: float = 2,
-    enforce_memory_limit: bool = False,
-    autoscale: bool = False,
-    min_workers: int | None = None,
-    max_workers: int | None = None,
+    autoscale: Autoscale | typing.Mapping[str, int | None] | None = None,
     shuffle_data: StorageLike = "/tmp/polars/shuffle-data",
     anonymous_results: StorageLike = "/tmp/polars/anonymous-results",
     spill_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
     ports: Ports | typing.Mapping[str, int | None] | None = None,
-    tls: Tls | typing.Mapping[str, str] | None = None,
-    auth: Jwks | typing.Mapping[str, str] | None = None,
-    require_user: bool = False,
-    allow_local_io: bool = True,
+    tls: Tls | typing.Mapping[str, typing.Any] | None = None,
     worker_max_restarts: int = 3,
     scheduler_max_restarts: int = 3,
     reconcile_interval: float = 10.0,
@@ -193,8 +160,6 @@ def build_spec(
     env_vars: typing.Mapping[str, str] | None = None,
     log_level: typing.Literal["info", "debug", "trace"] = "info",
     observatory: bool = True,
-    host_metrics: bool = True,
-    lineage: str | None = None,
     scheduler_overrides: typing.Mapping[str, typing.Any] | None = None,
     worker_overrides: typing.Mapping[str, typing.Any] | None = None,
 ) -> ClusterSpec:

@@ -172,9 +172,21 @@ fixed `task` or `shuffle` ports the second then fails to start, with a
 only.
 
 `tls=Tls(cert_file=..., key_file=...)` serves the client port and the dashboard
-over TLS. `auth=Jwks(url=..., issuer=..., audience=...)` makes both require a JWT
-validated against that JWKS endpoint. `require_user=True` rejects anonymous
-queries, and `allow_local_io=False` stops scans and sinks on local disk.
+over TLS. `Tls(..., auth=Jwks(url=..., issuer=..., audience=...))` also makes
+both require a JWT validated against that JWKS endpoint:
+
+```py
+from polars_nanook_ray import Jwks, RayClusterContext, Tls
+
+RayClusterContext(
+    license="/path/to/license.json",
+    tls=Tls(
+        cert_file="/etc/polars/cert.pem",
+        key_file="/etc/polars/key.pem",
+        auth=Jwks(url="https://idp/jwks", issuer="https://idp", audience="polars"),
+    ),
+)
+```
 
 ## Worker placement
 
@@ -245,9 +257,8 @@ logging there, for example with `logging.basicConfig(level=logging.INFO)`.
 
 `log_level` (`"info"`, `"debug"` or `"trace"`) sets the engines' own log level.
 `env_vars` sets environment variables of every engine process, and so of their
-query executors. `observatory=False` turns off the dashboard, `host_metrics=False`
-turns off host metrics, and `lineage` sends lineage events to `"stdout"`,
-`"stderr"` or an `https://` endpoint.
+query executors. `observatory=False` turns off the dashboard. Host metrics and
+lineage events are set through the [engine overrides](#engine-overrides-and-yaml).
 
 To clean all actors and underlying processes, Ray itself needs to be shut down
 using the following command:
@@ -258,10 +269,11 @@ ray stop --force
 
 ## Autoscaling
 
-With `autoscale=True`, the scheduler actor runs an HTTP server to handle scaling
-requests sent by the engine, and adds or removes Ray worker actors in response.
-`min_workers` and `max_workers` bound how far it may scale; setting them without
-`autoscale=True` is an error.
+With `autoscale=Autoscale(...)`, the scheduler actor runs an HTTP server to handle
+scaling requests sent by the engine, and adds or removes Ray worker actors in
+response. `Autoscale(min_workers=0, max_workers=None)` bounds how far it may scale,
+`max_workers=None` leaving it unbounded; `autoscale=None`, the default, keeps
+`workers` fixed.
 
 The cluster always _starts_ `workers` workers: the bounds are reported back to the
 engine on `GET /scale_config`, seeded into the per-query limits, and only enforced
@@ -279,7 +291,7 @@ names that are not worker actors.
 > A query that does not request a worker count is capped at
 > `default_workers_per_query`, which this package sets to `workers`.
 > `max_workers_per_query` bounds what any single query may claim, and is set to
-> `max_workers`, or `workers` without it. To let queries trigger a scale-up,
+> `Autoscale.max_workers`, or `workers` without it. To let queries trigger a scale-up,
 > request workers per query via `.distributed(min_workers=X)`, or raise the
 > default through `scheduler_overrides`:
 >
@@ -288,28 +300,27 @@ names that are not worker actors.
 > ```
 
 ```py
+from polars_nanook_ray import Autoscale, RayClusterContext
+
 RayClusterContext(
     license="/path/to/license.json",
     workers=2,
-    autoscale=True,
-    min_workers=1,
-    max_workers=16,
+    autoscale=Autoscale(min_workers=1, max_workers=16),
 )
 ```
 
 ## Resource requests and limits
 
-Three keywords control resource usage per worker:
+`cpus` (default `1`) and `memory` (default `2`, in GiB) are Ray's `num_cpus` and
+`memory` actor options, used by Ray for bin-packing. `cpus` is also the engine's
+CPU reservation, a hint for task placement reported to the observatory. Neither is
+enforced at the OS level.
 
-- `cpus` (default `1`) and `memory` (default `2`, in GiB): Ray's `num_cpus` and
-  `memory` actor options, used by Ray for bin-packing. `cpus` is also the engine's
-  CPU reservation, a hint for task placement reported to the observatory. Neither
-  is enforced at the OS level.
-- `enforce_memory_limit=True`: the engine also caps itself at `memory` through
-  cgroups, but only if a _delegated cgroup subtree is made available_.
-
-A plain session/SSH shell does not provide one (everything lives flatly in one
-cgroup), so the memory limit fails outright with the following message:
+`worker_overrides={"memory_limit": <bytes>}` makes each worker engine also cap
+itself through cgroups, but only if a _delegated cgroup subtree is made
+available_. A plain session/SSH shell does not provide one (everything lives
+flatly in one cgroup), so the memory limit fails outright with the following
+message:
 
 > Ensure cgroup is mounted and subgroups are delegated, or disable the memory
 > limit in the configuration file.
@@ -331,7 +342,18 @@ RayClusterContext(
 )
 ```
 
-`license`, the storage keywords, `ports`, `tls` and `auth` also accept plain
+These settings have no keyword and are set this way:
+
+| Setting | Override |
+| --- | --- |
+| Reject anonymous queries | `scheduler_overrides={"scheduler": {"deny_anonymous_users": True}}` |
+| No scans or sinks on local disk | `scheduler_overrides={"scheduler": {"allow_local_scans": False, "allow_local_sinks": False}}` |
+| No host metrics | `{"monitoring": {"host_metrics": {"enabled": False}}}` in both overrides |
+| Lineage events to stdout | `{"lineage": {"transport": {"stdio": {"output_stream": "stdout"}}}}` in both overrides |
+| Lineage events to an endpoint | `{"lineage": {"transport": {"http": {"endpoint": "https://..."}}}}` in both overrides |
+| Cap worker memory | `worker_overrides={"memory_limit": <bytes>}`, see [resource limits](#resource-requests-and-limits) |
+
+`license`, the storage keywords, `ports`, `autoscale` and `tls` also accept plain
 mappings, so a whole cluster can come from a YAML file:
 
 ```py

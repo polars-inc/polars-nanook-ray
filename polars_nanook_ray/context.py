@@ -23,7 +23,7 @@ if typing.TYPE_CHECKING:
     from typing import Self
 
     from polars_nanook_ray._spec import ClusterSpec, StorageLike
-    from polars_nanook_ray.options import Jwks, Ports, ServiceAccount, Tls
+    from polars_nanook_ray.options import Autoscale, Ports, ServiceAccount, Tls
 
 logger = logging.getLogger(__name__)
 
@@ -60,14 +60,9 @@ class RayClusterContext(ClusterContext):
         Ray spreads the workers over the nodes with these CPUs and `memory` free.
     memory
         The memory of each worker, in GiB, as requested from Ray.
-    enforce_memory_limit
-        Also cap each worker engine to `memory`, through cgroups.
     autoscale
-        Let the engine scale the workers to the queries.
-    min_workers
-        The fewest workers to scale down to; requires `autoscale`.
-    max_workers
-        The most workers to scale up to, unbounded if unset; requires `autoscale`.
+        Let the engine scale the workers to the queries, within the bounds of an
+        `Autoscale` (or the mapping of one); `None` keeps `workers` fixed.
     shuffle_data
         Where workers exchange shuffle data: a `Storage`, URL or absolute path.
     anonymous_results
@@ -79,13 +74,8 @@ class RayClusterContext(ClusterContext):
         place two workers on one node, so a fixed `task` or `shuffle` port makes the
         second fail to start: leave those unset.
     tls
-        Serve the client port and the dashboard over TLS.
-    auth
-        Require a JWT on the client port and the dashboard.
-    require_user
-        Reject anonymous queries.
-    allow_local_io
-        Allow scans and sinks on the local disk of the nodes.
+        Serve the client port and the dashboard over TLS, a `Tls` (or the mapping of
+        one); its `auth` also requires a JWT on them.
     worker_max_restarts
         How many times Ray restarts a worker, also on another node when its node is
         lost (-1 = unlimited).
@@ -107,14 +97,18 @@ class RayClusterContext(ClusterContext):
         The engine's log level.
     observatory
         Run the observatory and its dashboard.
-    host_metrics
-        Collect host metrics.
-    lineage
-        Where lineage events go: `"stdout"`, `"stderr"` or an `http(s)://` endpoint.
     scheduler_overrides
-        Deep-merged into the scheduler's engine TOML; `None` deletes a key.
+        Deep-merged into the scheduler's engine TOML; `None` deletes a key. Engine
+        settings without a keyword go here: `{"scheduler": {"deny_anonymous_users":
+        True}}` rejects anonymous queries, `{"scheduler": {"allow_local_scans": False,
+        "allow_local_sinks": False}}` forbids I/O on the nodes' local disks,
+        `{"monitoring": {"host_metrics": {"enabled": False}}}` (in both overrides)
+        stops host metrics, and `{"lineage": {"transport": {"stdio": {"output_stream":
+        "stdout"}}}}` (in both overrides) emits lineage events.
     worker_overrides
-        Deep-merged into each worker's engine TOML; `None` deletes a key.
+        Deep-merged into each worker's engine TOML; `None` deletes a key. E.g.
+        `{"memory_limit": 2 * 1024**3}` caps each worker engine to 2 GiB, through
+        cgroups.
 
     Raises
     ------
@@ -130,18 +124,12 @@ class RayClusterContext(ClusterContext):
         workers: int = 1,
         cpus: float = 1,
         memory: float = 2,
-        enforce_memory_limit: bool = False,
-        autoscale: bool = False,
-        min_workers: int | None = None,
-        max_workers: int | None = None,
+        autoscale: "Autoscale | typing.Mapping[str, int | None] | None" = None,
         shuffle_data: "StorageLike" = "/tmp/polars/shuffle-data",
         anonymous_results: "StorageLike" = "/tmp/polars/anonymous-results",
         spill_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
         ports: "Ports | typing.Mapping[str, int | None] | None" = None,
-        tls: "Tls | typing.Mapping[str, str] | None" = None,
-        auth: "Jwks | typing.Mapping[str, str] | None" = None,
-        require_user: bool = False,
-        allow_local_io: bool = True,
+        tls: "Tls | typing.Mapping[str, typing.Any] | None" = None,
         worker_max_restarts: int = 3,
         scheduler_max_restarts: int = 3,
         reconcile_interval: float = 10.0,
@@ -151,8 +139,6 @@ class RayClusterContext(ClusterContext):
         env_vars: typing.Mapping[str, str] | None = None,
         log_level: typing.Literal["info", "debug", "trace"] = "info",
         observatory: bool = True,
-        host_metrics: bool = True,
-        lineage: str | None = None,
         scheduler_overrides: typing.Mapping[str, typing.Any] | None = None,
         worker_overrides: typing.Mapping[str, typing.Any] | None = None,
     ) -> None:

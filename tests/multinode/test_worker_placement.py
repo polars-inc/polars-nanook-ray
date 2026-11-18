@@ -13,7 +13,7 @@ import ray
 from ray.actor import ActorHandle
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from polars_nanook_ray import Ports, RayClusterContext
+from polars_nanook_ray import Autoscale, Ports, RayClusterContext
 from polars_nanook_ray.actors import WorkerExited
 from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
@@ -205,7 +205,7 @@ def test_start_waits_for_the_scheduler_and_workers(
     ctx = make_context(
         binary_path=str(LISTENING_ENGINE),
         workers=NUM_CPU_NODES,
-        autoscale=True,
+        autoscale=Autoscale(),
         ports=Ports(client=client_port, dashboard=None),
     )
 

@@ -60,7 +60,9 @@ def make_context(**keywords: typing.Any) -> RayClusterContext:
     keywords.setdefault("cpus", 0)
     keywords.setdefault("memory", 0)
     keywords.setdefault("observatory", False)
-    keywords.setdefault("host_metrics", False)
+    no_host_metrics = {"monitoring": {"host_metrics": {"enabled": False}}}
+    keywords.setdefault("scheduler_overrides", no_host_metrics)
+    keywords.setdefault("worker_overrides", no_host_metrics)
     keywords.setdefault("ports", Ports(client=None, dashboard=None))
     keywords.setdefault("env_vars", {"POLARS_EULA_ACCEPTED": "yes"})
     return RayClusterContext(**keywords)

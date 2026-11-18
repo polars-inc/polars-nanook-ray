@@ -21,7 +21,7 @@ from ray.actor import ActorHandle
 from ray.cluster_utils import Cluster
 from ray.exceptions import ActorUnavailableError, RayActorError
 
-from polars_nanook_ray import Ports, RayClusterContext
+from polars_nanook_ray import Autoscale, Ports, RayClusterContext
 from polars_nanook_ray.identity import list_workers
 
 from .utils import (
@@ -46,7 +46,7 @@ def cluster() -> typing.Iterator[Cluster]:
 
 
 def scaling_context(**keywords: typing.Any) -> RayClusterContext:
-    return make_context(autoscale=True, **keywords)
+    return make_context(autoscale=Autoscale(), **keywords)
 
 
 def scaler_port(actor: ActorHandle) -> int:

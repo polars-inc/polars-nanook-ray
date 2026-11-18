@@ -81,7 +81,7 @@ class PolarsSchedulerActor:
             self.scheduler_host,
         )
 
-        if self._spec.autoscale:
+        if self._spec.autoscale is not None:
             self._scaling = serve_scaling(self._pool, self._spec)
         try:
             toml = render_scheduler(
@@ -171,8 +171,8 @@ class PolarsSchedulerActor:
         Parameters
         ----------
         num_workers
-            The number of worker to upscale or downscale to, clamped to `min_workers`
-            and `max_workers`. If neither `delete` nor `keep` is given, the workers
+            The number of worker to upscale or downscale to, clamped to the bounds
+            of `autoscale`. If neither `delete` nor `keep` is given, the workers
             with the highest indices are removed.
         delete
             Set of workers to terminate, as engine instance IDs or actor names.

@@ -199,23 +199,6 @@ class Ports(BaseModel):
     telemetry: int | None = None
 
 
-class Tls(BaseModel):
-    """Serve the client port and the dashboard over TLS.
-
-    Parameters
-    ----------
-    cert_file
-        Path to the PEM certificate on the scheduler's node.
-    key_file
-        Path to the PEM private key on the scheduler's node.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    cert_file: str
-    key_file: str
-
-
 class Jwks(BaseModel):
     """Require a JWT validated against a JWKS endpoint on the client port and dashboard.
 
@@ -234,3 +217,47 @@ class Jwks(BaseModel):
     url: str
     issuer: str
     audience: str
+
+
+class Tls(BaseModel):
+    """Serve the client port and the dashboard over TLS.
+
+    Parameters
+    ----------
+    cert_file
+        Path to the PEM certificate on the scheduler's node.
+    key_file
+        Path to the PEM private key on the scheduler's node.
+    auth
+        Also require a JWT on the client port and the dashboard.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cert_file: str
+    key_file: str
+    auth: Jwks | None = None
+
+
+class Autoscale(BaseModel):
+    """Let the engine scale the workers to the queries.
+
+    Parameters
+    ----------
+    min_workers
+        The fewest workers to scale down to.
+    max_workers
+        The most workers to scale up to, unbounded if unset.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    min_workers: int = Field(default=0, ge=0)
+    max_workers: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _bounds(self) -> "Autoscale":
+        if self.max_workers is not None and self.min_workers > self.max_workers:
+            msg = f"`min_workers` ({self.min_workers}) exceeds `max_workers` ({self.max_workers})"
+            raise ValueError(msg)
+        return self
