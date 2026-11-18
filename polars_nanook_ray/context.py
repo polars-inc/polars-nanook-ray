@@ -54,6 +54,10 @@ class RayClusterContext(ClusterContext):
     license
         A license file path, a license server `http(s)://` URI, or a `ServiceAccount`
         (or the mapping of one) validating online.
+    accept_eula
+        Accept the Polars Nanook EULA, which the engine asks for with an enterprise
+        license file: sets `POLARS_EULA_ACCEPTED=yes` for every engine. Without it,
+        set that variable on the Ray nodes or in `env_vars`.
     name
         The cluster ID, also the Ray namespace of its actors.
     workers
@@ -125,6 +129,7 @@ class RayClusterContext(ClusterContext):
         self,
         *,
         license: "str | os.PathLike[str] | ServiceAccount | typing.Mapping[str, typing.Any]",
+        accept_eula: bool = False,
         name: str = "polars-nanook",
         workers: int = 1,
         cpus: float = 1,

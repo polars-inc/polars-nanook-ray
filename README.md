@@ -102,9 +102,10 @@ With a license server, the scheduler and the workers register with it. This
 package does not run the license server: deploy it as its own service, outside
 Ray, and start it before any cluster that points at it.
 
-To run with a Polars Nanook Enterprise license, accept the EULA by setting
-`POLARS_EULA_ACCEPTED=yes`, either on the Ray nodes or with
-`env_vars={"POLARS_EULA_ACCEPTED": "yes"}`. Without it the engine prints the EULA
+To run with a Polars Nanook Enterprise license, accept the EULA with
+`accept_eula=True`, which sets `POLARS_EULA_ACCEPTED=yes` for every engine. Setting
+that variable on the Ray nodes, or through `env_vars`, works too. Without it the
+engine prints the EULA
 and refuses to start.
 
 ## Storage
