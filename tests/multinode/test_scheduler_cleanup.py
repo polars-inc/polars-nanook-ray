@@ -21,7 +21,7 @@ from ray.actor import ActorHandle
 from ray.cluster_utils import Cluster
 from ray.exceptions import ActorUnavailableError, RayActorError
 
-from polars_nanook_ray import Autoscale, Ports, RayClusterContext
+from polars_nanook_ray import Autoscale, Ports, RayComputeContext
 from polars_nanook_ray.identity import list_workers
 
 from .utils import (
@@ -46,7 +46,7 @@ def cluster() -> typing.Iterator[Cluster]:
     cluster.shutdown()
 
 
-def scaling_context(**keywords: typing.Any) -> RayClusterContext:
+def scaling_context(**keywords: typing.Any) -> RayComputeContext:
     return make_context(autoscale=Autoscale(), **keywords)
 
 
@@ -114,7 +114,7 @@ def scheduler(cluster: Cluster) -> typing.Iterator[Scheduler]:  # noqa: ARG001
     """Start a scheduler actor from a context, and stop it after the test."""
     running: list[typing.Iterator[ActorHandle]] = []
 
-    def _start(ctx: RayClusterContext, max_restarts: int = 0) -> ActorHandle:
+    def _start(ctx: RayComputeContext, max_restarts: int = 0) -> ActorHandle:
         running.append(run_scheduler(ctx, max_restarts))
         return next(running[-1])
 
@@ -124,7 +124,7 @@ def scheduler(cluster: Cluster) -> typing.Iterator[Scheduler]:  # noqa: ARG001
         next(actor, None)
 
 
-def started(scheduler: Scheduler, ctx: RayClusterContext) -> ActorHandle:
+def started(scheduler: Scheduler, ctx: RayComputeContext) -> ActorHandle:
     """Return a scheduler once its engine runs and its scaling endpoint answers."""
     actor = scheduler(ctx)
     engine_pid(actor)

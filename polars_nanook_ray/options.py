@@ -1,4 +1,4 @@
-"""Settings of a cluster that group naturally, given to `RayClusterContext`."""
+"""Settings of a cluster that group naturally, given to `RayComputeContext`."""
 
 import os
 import typing

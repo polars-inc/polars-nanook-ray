@@ -13,7 +13,7 @@ import ray
 from ray.actor import ActorHandle
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from polars_nanook_ray import Autoscale, Ports, RayClusterContext
+from polars_nanook_ray import Autoscale, Ports, RayComputeContext
 from polars_nanook_ray.actors import WorkerExited
 from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
@@ -45,21 +45,21 @@ def cpu_node_ids() -> typing.Iterator[set[str]]:
 
 
 @pytest.fixture
-def ctx(request: pytest.FixtureRequest) -> RayClusterContext:
+def ctx(request: pytest.FixtureRequest) -> RayComputeContext:
     return make_context(**getattr(request, "param", {}))
 
 
 @pytest.fixture
 def scheduler(
     cpu_node_ids: set[str],  # noqa: ARG001
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
 ) -> typing.Iterator[ActorHandle]:
     yield from run_scheduler(ctx)
 
 
 def test_workers_spread_over_the_nodes_with_room(
     cpu_node_ids: set[str],
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES))
@@ -71,7 +71,7 @@ def test_workers_spread_over_the_nodes_with_room(
 
 
 def test_repeated_upscale_adds_no_extra_workers(
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get([scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES) for _ in range(3)])
@@ -81,7 +81,7 @@ def test_repeated_upscale_adds_no_extra_workers(
 
 @pytest.mark.parametrize("ctx", [{"cpus": 2}], indirect=True)
 def test_a_worker_waiting_for_room_exists_and_is_not_ready(
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES + 1))
@@ -131,7 +131,7 @@ def test_workers_go_to_the_node_with_room_when_another_is_busy(
 
 
 def test_worker_host_is_the_node_ip(
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(1))
@@ -144,7 +144,7 @@ def test_worker_host_is_the_node_ip(
 
 
 def test_stop_without_dashboard(
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES))
@@ -158,7 +158,7 @@ def test_stop_without_dashboard(
 @pytest.mark.parametrize("ctx", [{"workers": 1, "cpus": 4}], indirect=True)
 def test_start_fails_fast_when_a_worker_fits_no_node(
     cpu_node_ids: set[str],  # noqa: ARG001
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
 ) -> None:
     started = time.monotonic()
     with pytest.raises(
@@ -192,7 +192,7 @@ def test_start_times_out_on_workers_waiting_for_room(
     _assert_stopped(ctx)
 
 
-def _assert_stopped(ctx: RayClusterContext) -> None:
+def _assert_stopped(ctx: RayComputeContext) -> None:
     assert list_workers(name_of(ctx)) == set()
     with pytest.raises(ValueError, match=SCHEDULER.actor_name):
         ray.get_actor(SCHEDULER.actor_name, namespace=name_of(ctx))

@@ -5,7 +5,7 @@ import pytest
 import ray
 from ray.cluster_utils import Cluster
 
-from polars_nanook_ray import Autoscale, RayClusterContext
+from polars_nanook_ray import Autoscale, RayComputeContext
 from polars_nanook_ray._spec import HEAD_NODE_RESOURCE
 from polars_nanook_ray.actors.head_node import placement_options, scheduler_options
 
@@ -45,7 +45,7 @@ def _node_of(options: dict[str, typing.Any]) -> str:
 
 
 def test_default_resource_is_the_head_node() -> None:
-    ctx = RayClusterContext(license="/dev/null")
+    ctx = RayComputeContext(license="/dev/null")
 
     assert ctx._spec.scheduler_resource == HEAD_NODE_RESOURCE
 
@@ -113,7 +113,7 @@ def test_no_resource_still_fails_fast_when_no_node_fits() -> None:
 def test_cluster_fails_fast_without_creating_actors(
     autoscale: Autoscale | None,
 ) -> None:
-    ctx = RayClusterContext(
+    ctx = RayComputeContext(
         license="/dev/null",
         name="head-node-test",
         autoscale=autoscale,

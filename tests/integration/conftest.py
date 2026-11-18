@@ -10,26 +10,26 @@ import polars_nanook as pn
 import pytest
 import ray
 
-from polars_nanook_ray import Ports, RayClusterContext
+from polars_nanook_ray import Ports, RayComputeContext
 from polars_nanook_ray.identity import WorkerId, list_workers
 
-ContextFactory = typing.Callable[..., RayClusterContext]
+ContextFactory = typing.Callable[..., RayComputeContext]
 TestQuery = typing.Callable[..., pl.DataFrame | None]
 
 RAY_GCS_PORT = 6379
 RAY_CLIENT_PORT = 10001
 
 
-def name_of(ctx: RayClusterContext) -> str:
+def name_of(ctx: RayComputeContext) -> str:
     return ctx._spec.name
 
 
-def scheduler_actor(ctx: RayClusterContext) -> typing.Any:
+def scheduler_actor(ctx: RayComputeContext) -> typing.Any:
     return ctx._scheduler_actor
 
 
 def rescale(
-    ctx: RayClusterContext,
+    ctx: RayComputeContext,
     num_workers: int,
     delete: set[str] | None = None,
     keep: set[str] | None = None,
@@ -42,7 +42,7 @@ def rescale(
     )
 
 
-def worker_actors(ctx: RayClusterContext) -> dict[WorkerId, typing.Any]:
+def worker_actors(ctx: RayComputeContext) -> dict[WorkerId, typing.Any]:
     """Return the cluster's live workers, listed from the GCS, with their actors."""
     namespace = name_of(ctx)
     return {
@@ -51,7 +51,7 @@ def worker_actors(ctx: RayClusterContext) -> dict[WorkerId, typing.Any]:
     }
 
 
-def make_context(**keywords: typing.Any) -> RayClusterContext:
+def make_context(**keywords: typing.Any) -> RayComputeContext:
     """A context for this machine: free ports, small workers, no observatory."""
     keywords.setdefault("license", os.environ.get("LICENSE_PATH", "./license.json"))
     keywords.setdefault("name", f"polars-nanook-{uuid.uuid4().hex[:8]}")
@@ -65,7 +65,7 @@ def make_context(**keywords: typing.Any) -> RayClusterContext:
     keywords.setdefault("worker_overrides", no_host_metrics)
     keywords.setdefault("ports", Ports(client=None, dashboard=None))
     keywords.setdefault("env_vars", {"POLARS_EULA_ACCEPTED": "yes"})
-    return RayClusterContext(**keywords)
+    return RayComputeContext(**keywords)
 
 
 def _ld_library_path() -> str:
@@ -113,9 +113,9 @@ def ray_head() -> typing.Iterator[None]:
 @pytest.fixture
 def ray_cluster() -> typing.Iterator[ContextFactory]:
     """Start clusters from `make_context` keywords; stop them after the test."""
-    started: list[RayClusterContext] = []
+    started: list[RayComputeContext] = []
 
-    def _factory(**keywords: typing.Any) -> RayClusterContext:
+    def _factory(**keywords: typing.Any) -> RayComputeContext:
         ctx = make_context(**keywords)
         ray.init(address="auto", ignore_reinit_error=True)
         started.append(ctx)
