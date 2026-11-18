@@ -43,6 +43,7 @@ ray.init(address="auto")
 
 with RayComputeContext(
     license="/path/to/license.json",
+    accept_eula=True,  # see the license section below
     workers=4,  # 1 CPU and 2 GiB each: Ray places them where they fit
 ) as ctx:
     print(
@@ -102,11 +103,10 @@ With a license server, the scheduler and the workers register with it. This
 package does not run the license server: deploy it as its own service, outside
 Ray, and start it before any cluster that points at it.
 
-To run with a Polars Nanook Enterprise license, accept the EULA with
+With a license file, the engine asks you to accept its EULA. Accept it with
 `accept_eula=True`, which sets `POLARS_EULA_ACCEPTED=yes` for every engine. Setting
 that variable on the Ray nodes, or through `env_vars`, works too. Without it the
-engine prints the EULA
-and refuses to start.
+engine prints the EULA and refuses to start.
 
 ## Storage
 
