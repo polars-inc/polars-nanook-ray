@@ -209,7 +209,7 @@ def test_start_times_out_on_workers_waiting_for_room(
     _assert_stopped(config)
 
 
-def test_start_waits_for_the_scaler_scheduler_and_workers(
+def test_start_waits_for_the_scheduler_and_workers(
     cpu_node_ids: set[str],  # noqa: ARG001
 ) -> None:
     scheduler = PolarsSchedulerConfig(

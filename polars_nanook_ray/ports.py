@@ -7,6 +7,10 @@ import typing
 class PortInUseError(RuntimeError):
     """A fixed port is already bound on this node."""
 
+    @classmethod
+    def of(cls, name: str, port: int | None) -> "PortInUseError":
+        return cls(f"{name} {port} is already in use on {socket.gethostname()}")
+
 
 def resolve_ports(requested: typing.Mapping[str, int | None]) -> dict[str, int]:
     """Return the port to bind for each name, picking a free one on this node if unset.
@@ -28,8 +32,7 @@ def resolve_ports(requested: typing.Mapping[str, int | None]) -> dict[str, int]:
             except OSError as exc:
                 if exc.errno != errno.EADDRINUSE:
                     raise
-                msg = f"{name} {port} is already in use on {socket.gethostname()}"
-                raise PortInUseError(msg) from exc
+                raise PortInUseError.of(name, port) from exc
             # Linux may share a port between unlistened SO_REUSEADDR sockets
             sock.listen()
             ports[name] = sock.getsockname()[1]

@@ -129,12 +129,6 @@ def test_no_resource_still_fails_fast_when_no_node_fits() -> None:
 
 
 @pytest.mark.usefixtures("nodes")
-def test_scaler_cannot_be_split_from_the_scheduler() -> None:
-    with pytest.raises(RuntimeError, match=r"2 alive Ray nodes.*scaler"):
-        placement_options("scheduler", resource=None, num_cpus=0, single_node=True)
-
-
-@pytest.mark.usefixtures("nodes")
 @pytest.mark.parametrize("scaling", [False, True])
 @pytest.mark.parametrize(
     ("scheduler", "error"),
