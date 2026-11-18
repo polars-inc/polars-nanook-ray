@@ -7,9 +7,11 @@ from polars_nanook_ray.options import (
     Storage,
     Tls,
 )
+from polars_nanook_ray.subprocess_runner import EngineStartError
 
 __all__ = [
     "Autoscale",
+    "EngineStartError",
     "Jwks",
     "Ports",
     "RayClusterContext",

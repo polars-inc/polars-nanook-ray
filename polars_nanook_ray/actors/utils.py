@@ -6,6 +6,7 @@ import typing
 
 import ray
 from ray.actor import ActorHandle
+from ray.exceptions import RayActorError, RayTaskError
 
 if typing.TYPE_CHECKING:
     from polars_nanook_ray.identity import WorkerId
@@ -43,6 +44,16 @@ def _handle_sigterm(func: typing.Callable[[], None]) -> None:
                 previous_handler(signum, frame)  # type: ignore[arg-type]
 
     signal.signal(signal.SIGTERM, _handler)
+
+
+def creation_error(exc: RayActorError) -> BaseException | None:
+    """Return the error the actor's constructor raised, if that is why it died.
+
+    Ray does not restart such an actor; it reports the error with the actor's
+    traceback, after its own explanation.
+    """
+    cause = exc.args[0] if exc.args else None
+    return cause.cause if isinstance(cause, RayTaskError) else None
 
 
 def resolve_actor_handles(

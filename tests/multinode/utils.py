@@ -31,10 +31,6 @@ def head_cluster() -> Cluster:
     return cluster
 
 
-_STUB_ENGINE = pathlib.Path(tempfile.gettempdir()) / "polars-nanook-ray-stub-engine"
-_STUB_ENGINE.write_text("#!/bin/sh\nexec sleep 3600\n")
-_STUB_ENGINE.chmod(0o755)
-
 # an engine that fails once it has read its config, as on a bad license
 FAILING_ENGINE = pathlib.Path(tempfile.gettempdir()) / "polars-nanook-ray-stub-fail"
 FAILING_ENGINE.write_text("#!/bin/sh\nsleep 1\nexit 1\n")
@@ -77,8 +73,8 @@ def free_port() -> int:
 
 
 def make_context(**keywords: typing.Any) -> RayClusterContext:
-    # an engine that keeps running, or its actor exits with it
-    keywords.setdefault("binary_path", str(_STUB_ENGINE))
+    # an engine that listens, or its actor fails to start
+    keywords.setdefault("binary_path", str(LISTENING_ENGINE))
     keywords.setdefault("license", "/nonexistent.json")
     keywords.setdefault("name", f"polars-nanook-{uuid.uuid4().hex[:8]}")
     keywords.setdefault("workers", 0)

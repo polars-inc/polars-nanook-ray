@@ -2,6 +2,7 @@ import contextlib
 import os
 import pathlib
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -11,7 +12,7 @@ import pytest
 
 from polars_nanook_ray import subprocess_runner as runner_module
 from polars_nanook_ray.identity import WorkerId
-from polars_nanook_ray.subprocess_runner import SubprocessRunner
+from polars_nanook_ray.subprocess_runner import EngineStartError, SubprocessRunner
 
 
 class Exits:
@@ -37,15 +38,6 @@ def _runner(tmp_path: pathlib.Path, script: str) -> SubprocessRunner:
     binary.write_text(f"#!/bin/sh\n{script}\n")
     binary.chmod(0o755)
     return SubprocessRunner(str(binary), WorkerId(0))
-
-
-def test_actor_exits_when_its_binary_exits_unasked(
-    tmp_path: pathlib.Path, exits: Exits
-) -> None:
-    _runner(tmp_path, "exit 3").start("", {})
-
-    assert exits.done.wait(timeout=10)
-    assert exits.codes == [1]
 
 
 def test_actor_stays_when_its_binary_is_stopped(
@@ -127,3 +119,106 @@ def test_binary_starts_without_prctl(
         assert runner.is_alive()
     finally:
         runner.stop()
+
+
+LICENSE_ERROR = (
+    "License file check failed: Failed to read license file: No such file or "
+    "directory (os error 2)"
+)
+# as the engine logs a fatal error: a JSON line on stdout, a plain one on stderr
+LOGS_LICENSE_ERROR = (
+    'echo \'{"fields":{"message":"' + LICENSE_ERROR + "\\\\n\\\\nStack backtrace:"
+    '\\\\n   0: <unknown>","error":"' + LICENSE_ERROR + '"},"level":"ERROR"}\'\n'
+    "echo '\"" + LICENSE_ERROR + "\"' >&2"
+)
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("", 0))
+        return int(sock.getsockname()[1])
+
+
+def _listens(port: int) -> str:
+    server = (
+        "import socket, time; s = socket.socket(); "
+        f"s.bind(('', {port})); s.listen(); time.sleep(60)"
+    )
+    return f'exec {sys.executable} -c "{server}"'
+
+
+def test_engine_output_still_reaches_the_actor_log(
+    tmp_path: pathlib.Path,
+    capfd: pytest.CaptureFixture[str],
+    exits: Exits,  # noqa: ARG001
+) -> None:
+    runner = _runner(tmp_path, "echo to-stdout; echo to-stderr >&2; exit 1")
+    runner.start("", {})
+
+    with pytest.raises(EngineStartError):
+        runner.wait_until_listening(_free_port(), timeout=10)
+    out, err = capfd.readouterr()
+    assert "to-stdout" in out
+    assert "to-stderr" in err
+
+
+def test_wait_returns_once_the_engine_listens(
+    tmp_path: pathlib.Path, exits: Exits
+) -> None:
+    port = _free_port()
+    runner = _runner(tmp_path, f"sleep 0.5\n{_listens(port)}")
+    runner.start("", {})
+    try:
+        runner.wait_until_listening(port, timeout=10)
+
+        assert runner.is_ready(port)
+    finally:
+        runner.stop()
+    assert exits.codes == []
+
+
+def test_engine_exiting_while_starting_raises_its_error(
+    tmp_path: pathlib.Path, exits: Exits
+) -> None:
+    runner = _runner(tmp_path, f"{LOGS_LICENSE_ERROR}\nexit 1")
+    runner.start("", {})
+
+    with pytest.raises(EngineStartError) as raised:
+        runner.wait_until_listening(_free_port(), timeout=10)
+
+    assert str(raised.value) == (
+        f"The worker-0 engine exited with code 1 while starting: {LICENSE_ERROR}"
+    )
+    # failing the actor's creation, which Ray does not retry, rather than its process
+    assert not exits.done.wait(timeout=1)
+
+
+def test_engine_never_listening_times_out_with_its_logged_errors(
+    tmp_path: pathlib.Path, exits: Exits
+) -> None:
+    port = _free_port()
+    runner = _runner(tmp_path, f"{LOGS_LICENSE_ERROR}\nexec sleep 60")
+    runner.start("", {})
+    try:
+        with pytest.raises(EngineStartError) as raised:
+            runner.wait_until_listening(port, timeout=1)
+    finally:
+        runner.stop()
+
+    assert str(raised.value) == (
+        f"Did not start within 1s: worker-0, whose engine does not "
+        f"listen on port {port}. Its engine logged: {LICENSE_ERROR}"
+    )
+    assert exits.codes == []
+
+
+def test_engine_exiting_after_it_listened_exits_the_actor(
+    tmp_path: pathlib.Path, exits: Exits
+) -> None:
+    port = _free_port()
+    runner = _runner(tmp_path, f"{_listens(port)} &\nsleep 2\nexit 3")
+    runner.start("", {})
+    runner.wait_until_listening(port, timeout=10)
+
+    assert exits.done.wait(timeout=10)
+    assert exits.codes == [1]
