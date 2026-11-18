@@ -524,3 +524,88 @@ def test_name_is_cluster_id() -> None:
 
     assert _scheduler(spec)["cluster_id"] == "team-a.prod_1"
     assert _worker(spec)["cluster_id"] == "team-a.prod_1"
+
+
+def test_overrides_merge_replace_and_delete() -> None:
+    spec = build_spec(
+        license="/license.json",
+        scheduler_overrides={
+            "scheduler": {
+                "default_partitions_per_worker": 8,
+                "checkpoint": {"period": "30s"},
+                "client_service": {"bind_addr": "127.0.0.1:5051"},
+                "deny_anonymous_users": None,
+            },
+            "observatory": {"database_path": "/data/observatory.db"},
+            "monitoring": None,
+            "memory_limit": 1024,
+        },
+        worker_overrides={"worker": {"heartbeat_period": "1s"}, "cpu_reserved": None},
+    )
+
+    scheduler = _scheduler(spec)
+    assert scheduler["scheduler"]["default_partitions_per_worker"] == 8
+    assert scheduler["scheduler"]["checkpoint"] == {"period": "30s"}
+    assert scheduler["scheduler"]["client_service"] == {"bind_addr": "127.0.0.1:5051"}
+    assert "deny_anonymous_users" not in scheduler["scheduler"]
+    assert scheduler["scheduler"]["allow_local_scans"] is True
+    assert scheduler["observatory"]["database_path"] == "/data/observatory.db"
+    assert scheduler["observatory"]["enabled"] is True
+    assert "monitoring" not in scheduler
+    assert scheduler["memory_limit"] == 1024
+
+    worker = _worker(spec)
+    assert worker["worker"]["heartbeat_period"] == "1s"
+    assert worker["worker"]["shuffle_location"] == {
+        "local": {"path": "/tmp/polars/shuffle-data"}
+    }
+    assert "cpu_reserved" not in worker
+
+
+def test_override_replaces_a_table_with_a_scalar() -> None:
+    spec = build_spec(license="/license.json", worker_overrides={"monitoring": "off"})
+
+    assert _worker(spec)["monitoring"] == "off"
+
+
+def test_cluster_from_yaml_shaped_mappings() -> None:
+    yaml_shaped: dict[str, typing.Any] = {
+        "license": {
+            "workspace_id": "ws",
+            "client_id": "id",
+            "client_secret": "secret",
+            "cert_dir": "/certs",
+        },
+        "name": "from-yaml",
+        "workers": 2,
+        "shuffle_data": {"url": "s3://bucket/shuffle", "options": {"aws_region": "x"}},
+        "anonymous_results": "gs://bucket/results",
+        "checkpoints": {"url": "/mnt/nfs/checkpoints", "shared": True},
+        "ports": {"client": 6051, "task": 6000},
+        "tls": {"cert_file": "/cert.pem", "key_file": "/key.pem"},
+        "auth": {"url": "https://idp/jwks", "issuer": "idp", "audience": "aud"},
+        "scheduler_overrides": {"scheduler": {"default_partitions_per_worker": 4}},
+    }
+
+    spec = build_spec(**yaml_shaped)
+
+    scheduler = _scheduler(spec, ports=SCHEDULER_PORTS | {"client": 6051})
+    assert scheduler["cluster_id"] == "from-yaml"
+    assert scheduler["license"]["on_prem"]["cert_dir"] == "/certs"
+    assert scheduler["scheduler"]["client_service"]["bind_addr"] == ":6051"
+    assert scheduler["scheduler"]["client_service"]["connection"]["tls"] == {
+        "certificate_key_file": "/cert.pem",
+        "private_key_file": "/key.pem",
+    }
+    assert scheduler["scheduler"]["anonymous_result_location"] == {
+        "gcs": {"url": "gs://bucket/results"}
+    }
+    assert scheduler["scheduler"]["default_partitions_per_worker"] == 4
+    assert worker_ports(spec) == {"task": 6000, "shuffle": None}
+    worker = _worker(spec)["worker"]
+    assert worker["shuffle_location"] == {
+        "s3": {"url": "s3://bucket/shuffle", "aws_region": "x"}
+    }
+    assert worker["checkpoint_location"] == {
+        "shared_filesystem": {"path": "/mnt/nfs/checkpoints"}
+    }
