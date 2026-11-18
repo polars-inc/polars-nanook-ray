@@ -16,13 +16,18 @@ from polars_nanook_ray.actors.utils import (
     ACTOR_RESPONSE_TIMEOUT,
     _handle_sigterm,
     _log_to_stderr,
+    creation_error,
     make_dirs,
     resolve_actor_handles,
     terminate_actors,
 )
 from polars_nanook_ray.identity import WorkerId, list_workers
 from polars_nanook_ray.ports import resolve_ports
-from polars_nanook_ray.subprocess_runner import SubprocessRunner
+from polars_nanook_ray.subprocess_runner import (
+    FAILED_START_STOP_TIMEOUT,
+    EngineStartError,
+    SubprocessRunner,
+)
 
 if typing.TYPE_CHECKING:
     from ray.actor import ActorHandle
@@ -64,7 +69,12 @@ class PolarsWorkerActor:
         self.stop()
 
     def start(self) -> None:
-        """Spawn the worker process, if not already running."""
+        """Spawn the worker process, if not already running, and wait until it listens.
+
+        Raises `EngineStartError` if the engine exits first or takes over
+        `startup_timeout` seconds; raised from the constructor, Ray does not restart
+        the actor.
+        """
         if self._runner.is_started():
             return
 
@@ -88,7 +98,14 @@ class PolarsWorkerActor:
             "Starting %s on %s as %s", self.worker_id, self.worker_host, instance_id
         )
 
-        self._runner.start(toml, worker_env(self._spec))
+        try:
+            self._runner.start(toml, worker_env(self._spec))
+            self._runner.wait_until_listening(
+                self.task_port, self._spec.startup_timeout
+            )
+        except BaseException:
+            self._runner.stop(FAILED_START_STOP_TIMEOUT)
+            raise
 
     def stop(self) -> None:
         """Terminate the worker process and clean up."""
@@ -146,8 +163,8 @@ class RayWorkers:
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
         """Stop the workers given; kill those that cannot answer at once.
 
-        A worker waiting for room on a node never answers, and a worker's engine
-        stops when its actor dies.
+        A worker waiting for room on a node never answers, nor does one waiting for its
+        engine to listen; a worker's engine stops when its actor dies.
         """
         actors = list(resolve_actor_handles(workers, self._spec.name).values())
         if not actors:
@@ -188,6 +205,11 @@ class RayWorkers:
             except ActorUnavailableError:  # Ray is restarting it: not ready yet
                 continue
             except ActorDiedError as exc:
+                if isinstance(error := creation_error(exc), EngineStartError):
+                    raise WorkerExited(str(error)) from None
+                if error is not None:
+                    msg = f"{worker} failed to start: {error}"
+                    raise WorkerExited(msg) from None
                 msg = (
                     f"{worker} exited while starting, past its restart limit; see its "
                     f"actor's log for the engine's error\n{exc}"

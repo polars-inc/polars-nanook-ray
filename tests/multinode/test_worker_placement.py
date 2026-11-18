@@ -253,7 +253,7 @@ def test_start_fails_fast_when_the_scheduler_exits(
     )
 
     started = time.monotonic()
-    with pytest.raises(RuntimeError, match="scheduler exited"):
+    with pytest.raises(RuntimeError, match="scheduler engine exited with code 1"):
         ctx.start()
 
     assert time.monotonic() - started < 15

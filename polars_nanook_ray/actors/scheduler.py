@@ -20,7 +20,10 @@ from polars_nanook_ray.actors.utils import (
 from polars_nanook_ray.actors.worker import RayWorkers
 from polars_nanook_ray.identity import SCHEDULER, WorkerId
 from polars_nanook_ray.ports import resolve_ports
-from polars_nanook_ray.subprocess_runner import SubprocessRunner
+from polars_nanook_ray.subprocess_runner import (
+    FAILED_START_STOP_TIMEOUT,
+    SubprocessRunner,
+)
 
 if typing.TYPE_CHECKING:
     from polars_nanook_ray._spec import ClusterSpec
@@ -68,7 +71,9 @@ class PolarsSchedulerActor:
         """Spawn the scheduler process, if not already running.
 
         Serves scaling requests before launching the engine, which asks for its scaling
-        config as it starts.
+        config as it starts. Waits until the engine accepts worker registrations, and
+        raises `EngineStartError` if it exits first or takes over `startup_timeout`
+        seconds; raised from the constructor, Ray does not restart the actor.
         """
         if self._runner.is_started():
             return
@@ -91,8 +96,12 @@ class PolarsSchedulerActor:
                 scaler_port=self.scaler_port(),
             )
             self._runner.start(toml, scheduler_env(self._spec))
+            self._runner.wait_until_listening(
+                self._ports["registration"], self._spec.startup_timeout
+            )
         except BaseException:
             self._stop_scaling()
+            self._runner.stop(FAILED_START_STOP_TIMEOUT)
             raise
 
     def stop(self) -> None:

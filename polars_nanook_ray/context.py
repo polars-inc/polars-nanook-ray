@@ -16,7 +16,7 @@ from polars_nanook_ray.actors import (
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import scheduler_options
-from polars_nanook_ray.actors.utils import ACTOR_RESPONSE_TIMEOUT
+from polars_nanook_ray.actors.utils import ACTOR_RESPONSE_TIMEOUT, creation_error
 from polars_nanook_ray.identity import SCHEDULER
 
 if typing.TYPE_CHECKING:
@@ -26,6 +26,9 @@ if typing.TYPE_CHECKING:
     from polars_nanook_ray.options import Autoscale, Ports, ServiceAccount, Tls
 
 logger = logging.getLogger(__name__)
+
+# past `startup_timeout`, for the actors to report why their engine did not start
+STARTUP_GRACE = 10.0
 
 
 class RayClusterContext(ClusterContext):
@@ -85,7 +88,9 @@ class RayClusterContext(ClusterContext):
         Seconds between checks that start workers up to the target, replacing those
         past their restart limit; 0 disables them.
     startup_timeout
-        Seconds `start()` waits for the scheduler and workers to be ready.
+        Seconds the scheduler and each worker have for their engine to accept
+        connections; past it, or if the engine exits first, the actor fails without
+        restarts, and `start()` raises with the errors the engine logged.
     scheduler_resource
         The Ray resource of the node to run the scheduler on, the head node by
         default; `None` places it anywhere.
@@ -169,25 +174,30 @@ class RayClusterContext(ClusterContext):
     def start(self) -> None:
         """Start (or reconnect to) the cluster; block until ready.
 
-        Has the scheduler top the workers up to `workers`, keeping any already
-        running, so reconnecting never adds workers. Fails right away if a worker's
-        `cpus` and `memory` exceed those of every alive Ray node, removing the actors it
-        started; workers that fit a busy node wait for Ray to have room for them.
+        Waits for the scheduler's engine, then has the scheduler top the workers up to
+        `workers`, keeping any already running, so reconnecting never adds workers.
+        Fails right away if a worker's `cpus` and `memory` exceed those of every alive
+        Ray node, and with the engine's error if an engine exits while starting; workers
+        that fit a busy node wait for Ray to have room for them. On failure, removes the
+        actors it started.
         """
         created = self._find_scheduler() is None
         self._scheduler_actor = self._find_scheduler() or self._create_scheduler()
         try:
-            workers = ray.get(
-                self._scheduler_actor.ensure_workers.remote(self._spec.workers),
-                timeout=ACTOR_RESPONSE_TIMEOUT,
-            )
-        except NoRoomForWorkers as exc:
+            self._wait_until_ready()
+            try:
+                workers = ray.get(
+                    self._scheduler_actor.ensure_workers.remote(self._spec.workers),
+                    timeout=ACTOR_RESPONSE_TIMEOUT,
+                )
+            except NoRoomForWorkers as exc:
+                # Ray raises a subclass of the actor's error, with its traceback
+                raise exc.cause from None  # type: ignore[attr-defined]
+            self._wait_until_ready()
+        except Exception:
             if created:
                 self.stop()
-            # Ray raises a subclass of the actor's error, with the actor's traceback
-            raise exc.cause from None  # type: ignore[attr-defined]
-
-        self._wait_until_ready()
+            raise
         self._connect_client()
 
         msg = f"Engine cluster ready: scheduler at {self.client_addr}, "
@@ -242,7 +252,7 @@ class RayClusterContext(ClusterContext):
 
     def _wait_until_ready(self) -> None:
         """Wait until the scheduler and the workers it starts are ready."""
-        timeout = self._spec.startup_timeout
+        timeout = self._spec.startup_timeout + STARTUP_GRACE
         logger.info("Waiting up to %gs for the scheduler", timeout)
 
         not_ready = ["scheduler"]
@@ -257,6 +267,8 @@ class RayClusterContext(ClusterContext):
             except ActorUnavailableError:  # Ray is restarting it: not ready yet
                 pass
             except ActorDiedError as exc:
+                if (error := creation_error(exc)) is not None:
+                    raise error from None
                 msg = (
                     "The scheduler exited while starting, past its restart limit; see "
                     f"the scheduler actor's log for the error\n{exc}"

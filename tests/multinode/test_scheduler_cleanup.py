@@ -25,6 +25,7 @@ from polars_nanook_ray import Autoscale, Ports, RayClusterContext
 from polars_nanook_ray.identity import list_workers
 
 from .utils import (
+    LISTENING_ENGINE,
     head_cluster,
     make_context,
     name_of,
@@ -141,7 +142,7 @@ def test_the_engine_starts_once_the_endpoint_answers(
         "#!/bin/sh\n"
         """uri=$(sed -n 's/^uri = "\\(.*\\)"$/\\1/p' "$3")\n"""
         f'curl -sf "$uri/scale_config" > "{answer}" || exit 1\n'
-        "exec sleep 3600\n"
+        f'exec "{LISTENING_ENGINE}" "$@"\n'
     )
     engine.chmod(0o755)
 

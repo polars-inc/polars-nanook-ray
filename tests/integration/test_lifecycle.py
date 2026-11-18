@@ -43,8 +43,9 @@ def test_scheduler_exit_fails_fast(
     tmp_path: pathlib.Path,
 ) -> None:
     started = time.monotonic()
-    # the engine's exit takes its actor down, and Ray retries it up to its limit
-    with pytest.raises(RuntimeError, match="scheduler exited"):
+    with pytest.raises(
+        RuntimeError, match=r"scheduler engine exited .* License file check failed"
+    ):
         ray_cluster(workers=0, license=tmp_path / "missing.json")
 
     assert time.monotonic() - started < 15

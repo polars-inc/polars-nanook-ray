@@ -228,8 +228,19 @@ restarted scheduler starts new ones. `worker_max_restarts` and
 `scheduler_max_restarts` (default `3` each) bound how often Ray restarts them; Ray
 restarts a worker whose node is lost on another node. Every `reconcile_interval`
 seconds (default `10`, `0` turns it off) the scheduler starts workers up to its
-target count, replacing those past their restart limit. `startup_timeout` (default `30` seconds) bounds how long
-`start()` waits for the engines.
+target count, replacing those past their restart limit.
+
+Each actor waits up to `startup_timeout` seconds (default `30`) for its engine to
+accept connections. An engine that exits first, or never listens, fails its actor
+without Ray restarting it, as restarting does not fix a bad license or setting, and
+`start()` raises with the errors the engine logged, after stopping the actors it
+created:
+
+```text
+EngineStartError: The scheduler engine exited with code 1 while starting: License file check failed: Failed to read license file: No such file or directory (os error 2)
+```
+
+Ray restarts an actor whose engine dies after it started, up to its restart limit.
 
 To attach to a running cluster from another script, connect by name:
 
