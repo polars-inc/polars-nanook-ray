@@ -3,19 +3,27 @@ import typing
 
 import ray
 
+from polars_nanook_ray._engine import (
+    SchedulerAddress,
+    local_dirs,
+    render_scheduler,
+    scheduler_env,
+    scheduler_ports,
+)
 from polars_nanook_ray.actors.pool import WorkerPool
 from polars_nanook_ray.actors.scaling import serve_scaling
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _log_to_stderr,
+    make_dirs,
 )
 from polars_nanook_ray.actors.worker import RayWorkers
-from polars_nanook_ray.config import PolarsRayClusterConfig
 from polars_nanook_ray.identity import SCHEDULER, WorkerId
 from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
 if typing.TYPE_CHECKING:
+    from polars_nanook_ray._spec import ClusterSpec
     from polars_nanook_ray.actors.scaling import ScalingEndpoint
 
 logger = logging.getLogger(__name__)
@@ -32,16 +40,21 @@ class Endpoints(typing.NamedTuple):
 class PolarsSchedulerActor:
     """The central service, distributing tasks and piloting autoscaling."""
 
-    def __init__(self, config: PolarsRayClusterConfig) -> None:
+    def __init__(self, spec: "ClusterSpec") -> None:
         _log_to_stderr()
-        self.config_cluster: PolarsRayClusterConfig = config
+        self._spec = spec
 
-        self._runner = SubprocessRunner(config.binary_path, SCHEDULER)
+        self._runner = SubprocessRunner(spec.binary_path, SCHEDULER)
 
         self.scheduler_host: str = self._runner.host
-        self._pool = WorkerPool(
-            RayWorkers(config, self.scheduler_host), config, config.num_workers
+        # resolved once, as the workers reach the scheduler on them
+        self._ports = resolve_ports(scheduler_ports(spec))
+        address = SchedulerAddress(
+            self.scheduler_host,
+            self._ports["registration"],
+            self._ports.get("telemetry"),
         )
+        self._pool = WorkerPool(RayWorkers(spec, address), spec, spec.workers)
         self._scaling: ScalingEndpoint | None = None
 
         self.start()
@@ -60,20 +73,24 @@ class PolarsSchedulerActor:
         if self._runner.is_started():
             return
 
-        resolve_ports(self.config_cluster.config_bind_ports_scheduler())
-
-        toml = self.config_cluster.config_scheduler(self.scheduler_host)
+        make_dirs(local_dirs(self._spec))
 
         logger.info(
             "Starting scheduler (%s observatory) on %s",
-            "and" if self.config_cluster.scheduler.observatory.enabled else "without",
+            "and" if self._spec.observatory else "without",
             self.scheduler_host,
         )
 
-        if self.config_cluster.scheduler.scaling.enabled:
-            self._scaling = serve_scaling(self._pool, self.config_cluster)
+        if self._spec.autoscale:
+            self._scaling = serve_scaling(self._pool, self._spec)
         try:
-            self._runner.start(toml, self.config_cluster.engine_env())
+            toml = render_scheduler(
+                self._spec,
+                host=self.scheduler_host,
+                ports=self._ports,
+                scaler_port=self.scaler_port(),
+            )
+            self._runner.start(toml, scheduler_env(self._spec))
         except BaseException:
             self._stop_scaling()
             raise
@@ -92,14 +109,13 @@ class PolarsSchedulerActor:
 
     def _stop_scaling(self) -> None:
         """Stop serving scaling requests; those in progress may finish."""
-        if self._scaling is not None:
-            self._scaling.close()
+        scaling, self._scaling = self._scaling, None
+        if scaling is not None:
+            scaling.close()
 
     def is_ready(self) -> bool:
         """Return whether the scheduler process is alive and accepting registration."""
-        return self._runner.is_ready(
-            self.config_cluster.scheduler.worker_registration_port
-        )
+        return self._runner.is_ready(self._ports["registration"])
 
     def not_ready(self) -> list[str]:
         """Return the scheduler if it is not ready, else the workers not ready yet.
@@ -116,15 +132,22 @@ class PolarsSchedulerActor:
 
     def endpoints(self) -> Endpoints:
         """Return the URLs to submit queries to and of the dashboard, if any."""
-        scheduler = self.config_cluster.scheduler
+        scheme = "http" if self._spec.tls is None else "https"
+        base = f"{scheme}://{self.scheduler_host}"
         return Endpoints(
-            client=f"http://{self.scheduler_host}:{scheduler.client_port}",
+            client=f"{base}:{self._ports['client']}",
             dashboard=(
-                f"http://{self.scheduler_host}:{scheduler.observatory.rest_port}"
-                if scheduler.observatory.enabled
-                else None
+                f"{base}:{self._ports['dashboard']}" if self._spec.observatory else None
             ),
         )
+
+    def spec(self) -> "ClusterSpec":
+        """Return what the cluster was started from."""
+        return self._spec
+
+    def scaler_port(self) -> int | None:
+        """Return the port serving the engine's scaling requests, if autoscaling."""
+        return None if self._scaling is None else self._scaling.port
 
     def get_scheduler_pid(self) -> int | None:
         """Return the OS process ID of the scheduler binary subprocess."""

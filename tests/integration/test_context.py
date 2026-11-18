@@ -1,18 +1,13 @@
 import ray
 
-from polars_nanook_ray.context import RayClusterContext
-
-from .conftest import RayClusterConfigFactory, TestQuery
+from .conftest import TestQuery, make_context
 
 
-def test_ray_cluster_context(
-    ray_cluster_config: RayClusterConfigFactory,
-    run_query: TestQuery,
-) -> None:
+def test_ray_cluster_context(run_query: TestQuery) -> None:
     ray.init(address="auto", ignore_reinit_error=True)
     try:
-        with RayClusterContext(ray_cluster_config(num_workers=1)) as ctx:
-            result = run_query(context=ctx)
+        with make_context(workers=1) as ctx:
+            result = run_query(ctx)
     finally:
         ray.shutdown()
 

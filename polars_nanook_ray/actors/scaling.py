@@ -1,14 +1,16 @@
-import errno
 import http.server
 import json
 import logging
 import threading
+import typing
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
+from polars_nanook_ray._engine import SCALER_HOST
 from polars_nanook_ray.actors.pool import WorkerPool
-from polars_nanook_ray.config import SCALER_HOST, PolarsRayClusterConfig
-from polars_nanook_ray.ports import PortInUseError
+
+if typing.TYPE_CHECKING:
+    from polars_nanook_ray._spec import ClusterSpec
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +59,8 @@ class _ScalingRequestHandler(http.server.BaseHTTPRequestHandler):
             {
                 "available": len(status.running),
                 "desired": status.target,
-                "min": self.server.config.min_workers,
-                "max": self.server.config.max_workers,
+                "min": self.server.spec.min_workers or 0,
+                "max": self.server.spec.max_workers,
             },
         )
 
@@ -114,20 +116,12 @@ class _ScalingRequestHandler(http.server.BaseHTTPRequestHandler):
 
 
 class _ScalingHTTPServer(http.server.ThreadingHTTPServer):
-    """A `ThreadingHTTPServer` that carries the worker pool to its handlers.
+    """A `ThreadingHTTPServer` that carries the worker pool to its handlers."""
 
-    Rebinds a port whose closed connections linger in TIME_WAIT, as a restarted
-    scheduler must, but not one another process listens on.
-    """
-
-    allow_reuse_address = True
-
-    def __init__(self, pool: WorkerPool, config: PolarsRayClusterConfig) -> None:
+    def __init__(self, pool: WorkerPool, spec: "ClusterSpec") -> None:
         self.pool = pool
-        self.config = config
-        super().__init__(
-            (SCALER_HOST, config.scheduler.scaling.port), _ScalingRequestHandler
-        )
+        self.spec = spec
+        super().__init__((SCALER_HOST, 0), _ScalingRequestHandler)
 
 
 class ScalingEndpoint:
@@ -135,6 +129,7 @@ class ScalingEndpoint:
 
     def __init__(self, server: _ScalingHTTPServer) -> None:
         self._server: _ScalingHTTPServer | None = server
+        self.port: int = server.server_address[1]
         threading.Thread(
             target=server.serve_forever, name="scaling-endpoint", daemon=True
         ).start()
@@ -150,18 +145,11 @@ class ScalingEndpoint:
             server.server_close()
 
 
-def serve_scaling(pool: WorkerPool, config: PolarsRayClusterConfig) -> ScalingEndpoint:
-    """Serve the engine's scaling requests on `scaling.port` until closed.
+def serve_scaling(pool: WorkerPool, spec: "ClusterSpec") -> ScalingEndpoint:
+    """Serve the engine's scaling requests on a free port until closed.
 
-    Listens on return. Raises `PortInUseError` if the port is taken.
+    Listens on return, on the endpoint's `port`.
     """
-    name, port = "scaling.port", config.scheduler.scaling.port
-    try:
-        server = _ScalingHTTPServer(pool, config)
-    except OSError as exc:
-        if exc.errno != errno.EADDRINUSE:
-            raise
-        raise PortInUseError.of(name, port) from exc
-
-    logger.info("Scaling endpoint listening on %s:%d", SCALER_HOST, port)
-    return ScalingEndpoint(server)
+    endpoint = ScalingEndpoint(_ScalingHTTPServer(pool, spec))
+    logger.info("Scaling endpoint listening on %s:%d", SCALER_HOST, endpoint.port)
+    return endpoint

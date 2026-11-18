@@ -5,7 +5,15 @@ import psutil
 import pytest
 import ray
 
-from .conftest import RayClusterFactory, _free_port, worker_actors
+from polars_nanook_ray import Ports
+
+from .conftest import ContextFactory, worker_actors
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 def _listening_ports(pid: int) -> set[int]:
@@ -17,9 +25,9 @@ def _listening_ports(pid: int) -> set[int]:
 
 
 def test_workers_on_one_host_listen_on_distinct_ports(
-    ray_cluster: RayClusterFactory,
+    ray_cluster: ContextFactory,
 ) -> None:
-    cluster = ray_cluster(num_workers=2)
+    cluster = ray_cluster(workers=2)
 
     ports = [
         _listening_ports(ray.get(actor.get_worker_pid.remote()))
@@ -30,9 +38,11 @@ def test_workers_on_one_host_listen_on_distinct_ports(
     assert ports[0].isdisjoint(ports[1])
 
 
-def test_worker_listens_on_fixed_port(ray_cluster: RayClusterFactory) -> None:
+def test_worker_listens_on_fixed_port(ray_cluster: ContextFactory) -> None:
     port = _free_port()
-    cluster = ray_cluster(num_workers=1, worker_task_port=port)
+    cluster = ray_cluster(
+        workers=1, ports=Ports(client=None, dashboard=None, task=port)
+    )
 
     (actor,) = worker_actors(cluster).values()
     pid = ray.get(actor.get_worker_pid.remote())
@@ -41,8 +51,8 @@ def test_worker_listens_on_fixed_port(ray_cluster: RayClusterFactory) -> None:
 
 
 def _assert_start_fails_fast_on_taken_port(
-    ray_cluster: RayClusterFactory,
-    port_kwarg: str,
+    ray_cluster: ContextFactory,
+    port_name: str,
 ) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("", 0))
@@ -51,14 +61,17 @@ def _assert_start_fails_fast_on_taken_port(
 
         started = time.monotonic()
         with pytest.raises(Exception, match=rf"{port} is already in use"):
-            ray_cluster(num_workers=1, **{port_kwarg: port})
+            ray_cluster(
+                workers=1,
+                ports=Ports(**{"client": None, "dashboard": None, port_name: port}),
+            )
 
     assert time.monotonic() - started < 15
 
 
-def test_taken_worker_port_fails_fast(ray_cluster: RayClusterFactory) -> None:
-    _assert_start_fails_fast_on_taken_port(ray_cluster, "worker_task_port")
+def test_taken_worker_port_fails_fast(ray_cluster: ContextFactory) -> None:
+    _assert_start_fails_fast_on_taken_port(ray_cluster, "task")
 
 
-def test_taken_scheduler_port_fails_fast(ray_cluster: RayClusterFactory) -> None:
-    _assert_start_fails_fast_on_taken_port(ray_cluster, "scheduler_client_port")
+def test_taken_scheduler_port_fails_fast(ray_cluster: ContextFactory) -> None:
+    _assert_start_fails_fast_on_taken_port(ray_cluster, "client")

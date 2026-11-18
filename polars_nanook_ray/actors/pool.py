@@ -6,7 +6,7 @@ import typing
 from polars_nanook_ray.identity import WorkerId, identify
 
 if typing.TYPE_CHECKING:
-    from polars_nanook_ray.config import PolarsRayClusterConfig
+    from polars_nanook_ray._spec import ClusterSpec
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +61,9 @@ class PoolStatus(typing.NamedTuple):
 class WorkerPool:
     """The workers of one cluster, kept at a target count; Ray places them."""
 
-    def __init__(
-        self,
-        workers: Workers,
-        config: "PolarsRayClusterConfig",
-        target: int,
-    ) -> None:
+    def __init__(self, workers: Workers, spec: "ClusterSpec", target: int) -> None:
         self._workers = workers
-        self._config = config
+        self._spec = spec
         self._target = target
         self._lock = threading.Lock()
         self._halted = threading.Event()
@@ -150,11 +145,8 @@ class WorkerPool:
             return started
 
     def start_reconciling(self) -> None:
-        """Reconcile in a thread until halted.
-
-        Every `worker_reconcile_interval` seconds; never if that is 0.
-        """
-        interval = self._config.worker_reconcile_interval
+        """Reconcile every `reconcile_interval` seconds in a thread until halted."""
+        interval = self._spec.reconcile_interval
         if interval > 0:
             threading.Thread(
                 target=self._reconcile_until_halted,
@@ -193,7 +185,7 @@ class WorkerPool:
                 logger.exception("Could not reconcile the worker pool")
 
     def _clamp(self, num_workers: int) -> int:
-        low, high = self._config.min_workers, self._config.max_workers
+        low, high = self._spec.min_workers or 0, self._spec.max_workers
         clamped = max(low, num_workers if high is None else min(high, num_workers))
         if clamped != num_workers:
             logger.warning(
@@ -206,7 +198,7 @@ class WorkerPool:
         return clamped
 
     def _check_room(self) -> None:
-        cpus, memory = self._config.worker.cpus_hint, self._config.worker.memory_hint
+        cpus, memory = self._spec.cpus, self._spec.memory_bytes
         nodes = self._workers.nodes()
         if any(n.cpus >= cpus and n.memory >= memory for n in nodes):
             return
@@ -222,7 +214,7 @@ class WorkerPool:
             shortfall = f"{cpus:g} CPU and {_gib(memory)} of memory, but no single node has both"
         msg = (
             f"Cannot place a worker on any alive Ray node: it requests {shortfall}. "
-            "Lower `cpus_hint` or `memory_hint`, or add larger nodes."
+            "Lower `cpus` or `memory`, or add larger nodes."
         )
         raise NoRoomForWorkers(msg)
 

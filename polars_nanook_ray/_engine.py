@@ -4,6 +4,7 @@ The only module that knows how the engine is configured.
 """
 
 import dataclasses
+import pathlib
 import typing
 
 import toml
@@ -46,6 +47,21 @@ def scheduler_ports(spec: "ClusterSpec") -> dict[str, int | None]:
 def worker_ports(spec: "ClusterSpec") -> dict[str, int | None]:
     """Return the ports a worker binds, by name; `None` asks for a free one."""
     return {"task": spec.ports.task, "shuffle": spec.ports.shuffle}
+
+
+def local_dirs(spec: "ClusterSpec") -> list[str]:
+    """Return the local directories the engines need on each node."""
+    dirs = [
+        storage.url
+        for storage in (spec.shuffle_data, spec.anonymous_results, spec.checkpoints)
+        if storage is not None and storage.backend == "local"
+    ]
+    dirs.append(spec.spill_dir)
+    if spec.observatory:
+        dirs.append(str(pathlib.PurePath(OBSERVATORY_DATABASE).parent))
+    if isinstance(spec.license, ServiceAccount):
+        dirs.append(spec.license.cert_dir)
+    return dirs
 
 
 def scheduler_env(spec: "ClusterSpec") -> dict[str, str]:

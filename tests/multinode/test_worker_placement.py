@@ -13,15 +13,8 @@ import ray
 from ray.actor import ActorHandle
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+from polars_nanook_ray import Ports, RayClusterContext
 from polars_nanook_ray.actors import WorkerExited
-from polars_nanook_ray.cluster import PolarsRayCluster
-from polars_nanook_ray.config import (
-    PolarsObservatoryConfig,
-    PolarsRayClusterConfig,
-    PolarsScalingConfig,
-    PolarsSchedulerConfig,
-    PolarsWorkerConfig,
-)
 from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
 from .utils import (
@@ -29,7 +22,8 @@ from .utils import (
     LISTENING_ENGINE,
     free_port,
     head_cluster,
-    make_config,
+    make_context,
+    name_of,
     node_id,
     run_scheduler,
     wait_for_workers,
@@ -51,48 +45,48 @@ def cpu_node_ids() -> typing.Iterator[set[str]]:
 
 
 @pytest.fixture
-def config(request: pytest.FixtureRequest) -> PolarsRayClusterConfig:
-    return make_config(**getattr(request, "param", {}))
+def ctx(request: pytest.FixtureRequest) -> RayClusterContext:
+    return make_context(**getattr(request, "param", {}))
 
 
 @pytest.fixture
 def scheduler(
     cpu_node_ids: set[str],  # noqa: ARG001
-    config: PolarsRayClusterConfig,
+    ctx: RayClusterContext,
 ) -> typing.Iterator[ActorHandle]:
-    yield from run_scheduler(config)
+    yield from run_scheduler(ctx)
 
 
 def test_workers_spread_over_the_nodes_with_room(
     cpu_node_ids: set[str],
-    config: PolarsRayClusterConfig,
+    ctx: RayClusterContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES))
 
-    workers = wait_for_workers(config.cluster_id, NUM_CPU_NODES)
+    workers = wait_for_workers(name_of(ctx), NUM_CPU_NODES)
 
     assert set(workers) == {WorkerId(i) for i in range(NUM_CPU_NODES)}
     assert {node_id(actor) for actor in workers.values()} == cpu_node_ids
 
 
 def test_repeated_upscale_adds_no_extra_workers(
-    config: PolarsRayClusterConfig,
+    ctx: RayClusterContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get([scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES) for _ in range(3)])
 
-    wait_for_workers(config.cluster_id, NUM_CPU_NODES)
+    wait_for_workers(name_of(ctx), NUM_CPU_NODES)
 
 
-@pytest.mark.parametrize("config", [{"worker_cpus": 2}], indirect=True)
-def test_a_worker_waiting_for_room_exists_and_is_not_placed(
-    config: PolarsRayClusterConfig,
+@pytest.mark.parametrize("ctx", [{"cpus": 2}], indirect=True)
+def test_a_worker_waiting_for_room_exists_and_is_not_ready(
+    ctx: RayClusterContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES + 1))
 
-    workers = wait_for_workers(config.cluster_id, NUM_CPU_NODES + 1)
+    workers = wait_for_workers(name_of(ctx), NUM_CPU_NODES + 1)
 
     placed = ray.wait(
         [actor.__ray_ready__.remote() for actor in workers.values()],
@@ -124,28 +118,24 @@ class Blocker:
 
 def test_workers_go_to_the_node_with_room_when_another_is_busy(
     busy_node: str,
-    config: PolarsRayClusterConfig,
-    scheduler: ActorHandle,
 ) -> None:
-    ray.get(scheduler.rescale_worker_pool_to.remote(2))
+    ctx = make_context(binary_path=str(LISTENING_ENGINE), workers=2, startup_timeout=20)
 
-    workers = wait_for_workers(config.cluster_id, 2)
+    try:
+        ctx.start()
 
-    placed = ray.wait(
-        [actor.__ray_ready__.remote() for actor in workers.values()],
-        num_returns=2,
-        timeout=10,
-    )[0]
-    assert len(placed) == 2
-    assert {node_id(actor) for actor in workers.values()} == {busy_node}
+        workers = wait_for_workers(name_of(ctx), 2)
+        assert {node_id(actor) for actor in workers.values()} == {busy_node}
+    finally:
+        ctx.stop()
 
 
 def test_worker_host_is_the_node_ip(
-    config: PolarsRayClusterConfig,
+    ctx: RayClusterContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(1))
-    (worker,) = wait_for_workers(config.cluster_id, 1).values()
+    (worker,) = wait_for_workers(name_of(ctx), 1).values()
 
     node_ips = {node["NodeID"]: node["NodeManagerAddress"] for node in ray.nodes()}
     host = ray.get(worker.__ray_call__.remote(lambda actor: actor.worker_host))
@@ -154,93 +144,83 @@ def test_worker_host_is_the_node_ip(
 
 
 def test_stop_without_dashboard(
-    config: PolarsRayClusterConfig,
+    ctx: RayClusterContext,
     scheduler: ActorHandle,
 ) -> None:
     ray.get(scheduler.rescale_worker_pool_to.remote(NUM_CPU_NODES))
-    wait_for_workers(config.cluster_id, NUM_CPU_NODES)
+    wait_for_workers(name_of(ctx), NUM_CPU_NODES)
 
-    PolarsRayCluster(config).stop()
+    ctx.stop()
 
-    assert list_workers(config.cluster_id) == set()
+    assert list_workers(name_of(ctx)) == set()
 
 
-@pytest.mark.parametrize(
-    "config", [{"num_workers": 1, "worker_cpus": 4}], indirect=True
-)
+@pytest.mark.parametrize("ctx", [{"workers": 1, "cpus": 4}], indirect=True)
 def test_start_fails_fast_when_a_worker_fits_no_node(
     cpu_node_ids: set[str],  # noqa: ARG001
-    config: PolarsRayClusterConfig,
+    ctx: RayClusterContext,
 ) -> None:
     started = time.monotonic()
     with pytest.raises(
         RuntimeError, match="requests 4 CPU, but the largest node has 2 CPU"
     ):
-        PolarsRayCluster(config).start()
+        ctx.start()
 
     assert time.monotonic() - started < 15
-    assert list_workers(config.cluster_id) == set()
-    with pytest.raises(ValueError, match=SCHEDULER.actor_name):
-        ray.get_actor(SCHEDULER.actor_name, namespace=config.cluster_id)
 
-
-def _assert_stopped(config: PolarsRayClusterConfig) -> None:
-    assert list_workers(config.cluster_id) == set()
+    assert list_workers(name_of(ctx)) == set()
     with pytest.raises(ValueError, match=SCHEDULER.actor_name):
-        ray.get_actor(SCHEDULER.actor_name, namespace=config.cluster_id)
+        ray.get_actor(SCHEDULER.actor_name, namespace=name_of(ctx))
 
 
 def test_start_times_out_on_workers_waiting_for_room(
     cpu_node_ids: set[str],  # noqa: ARG001
 ) -> None:
-    config = make_config(
+    ctx = make_context(
         binary_path=str(LISTENING_ENGINE),
-        num_workers=NUM_CPU_NODES + 1,
-        worker_cpus=2,
+        workers=NUM_CPU_NODES + 1,
+        cpus=2,
         startup_timeout=5,
     )
 
     try:
         with pytest.raises(RuntimeError, match="waiting for a Ray node with 2 CPU"):
-            PolarsRayCluster(config).start()
+            ctx.start()
     finally:
-        PolarsRayCluster(config).stop()
+        ctx.stop()
 
-    _assert_stopped(config)
+    _assert_stopped(ctx)
+
+
+def _assert_stopped(ctx: RayClusterContext) -> None:
+    assert list_workers(name_of(ctx)) == set()
+    with pytest.raises(ValueError, match=SCHEDULER.actor_name):
+        ray.get_actor(SCHEDULER.actor_name, namespace=name_of(ctx))
 
 
 def test_start_waits_for_the_scheduler_and_workers(
     cpu_node_ids: set[str],  # noqa: ARG001
 ) -> None:
-    scheduler = PolarsSchedulerConfig(
-        cpus_hint=0,
-        memory_hint=1,
-        client_port=free_port(),
-        worker_registration_port=free_port(),
-        observatory=PolarsObservatoryConfig(enabled=False),
-        scaling=PolarsScalingConfig(enabled=True, port=free_port()),
-    )
-    config = make_config(
+    client_port = free_port()
+    ctx = make_context(
         binary_path=str(LISTENING_ENGINE),
-        num_workers=NUM_CPU_NODES,
-        scheduler=scheduler,
+        workers=NUM_CPU_NODES,
+        autoscale=True,
+        ports=Ports(client=client_port, dashboard=None),
     )
-    cluster = PolarsRayCluster(config)
 
     try:
-        cluster.start()
+        ctx.start()
 
-        assert len(list_workers(config.cluster_id)) == NUM_CPU_NODES
-        assert ray.get(cluster._scheduler_actor.not_ready.remote()) == []
-        host = ray.get(cluster._scheduler_actor.get_host.remote())
-        assert cluster.get_client_addr() == f"{host}:{scheduler.client_port}"
-        assert cluster.get_dashboard_addr() == (
-            "The observatory is not enabled on this cluster"
-        )
+        assert len(list_workers(name_of(ctx))) == NUM_CPU_NODES
+        assert ray.get(ctx._scheduler_actor.not_ready.remote()) == []
+        host = ray.get(ctx._scheduler_actor.get_host.remote())
+        assert ctx.client_addr == f"http://{host}:{client_port}"
+        assert ctx.dashboard_addr is None
     finally:
-        cluster.stop()
+        ctx.stop()
 
-    _assert_stopped(config)
+    _assert_stopped(ctx)
 
 
 def test_start_fails_fast_when_a_worker_exits(
@@ -250,32 +230,32 @@ def test_start_fails_fast_when_a_worker_exits(
         listener.bind(("", 0))
         listener.listen()
         port = listener.getsockname()[1]
-        config = make_config(
+        ctx = make_context(
             binary_path=str(LISTENING_ENGINE),
-            num_workers=1,
-            worker=PolarsWorkerConfig(cpus_hint=1, memory_hint=1, task_port=port),
+            workers=1,
+            ports=Ports(client=None, dashboard=None, task=port),
         )
 
         started = time.monotonic()
         with pytest.raises(WorkerExited, match=rf"{port} is already in use"):
-            PolarsRayCluster(config).start()
+            ctx.start()
 
     assert time.monotonic() - started < 15
-    PolarsRayCluster(config).stop()
-    _assert_stopped(config)
+    ctx.stop()
+    _assert_stopped(ctx)
 
 
 def test_start_fails_fast_when_the_scheduler_exits(
     cpu_node_ids: set[str],  # noqa: ARG001
 ) -> None:
-    config = make_config(
-        binary_path=str(FAILING_ENGINE), num_workers=0, scheduler_max_restarts=1
+    ctx = make_context(
+        binary_path=str(FAILING_ENGINE), workers=0, scheduler_max_restarts=1
     )
 
     started = time.monotonic()
     with pytest.raises(RuntimeError, match="scheduler exited"):
-        PolarsRayCluster(config).start()
+        ctx.start()
 
     assert time.monotonic() - started < 15
-    PolarsRayCluster(config).stop()
-    _assert_stopped(config)
+    ctx.stop()
+    _assert_stopped(ctx)
