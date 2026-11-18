@@ -9,7 +9,7 @@ import ray
 from ray.actor import ActorHandle
 from ray.util.state import list_actors
 
-from polars_nanook_ray.actors import SCHEDULER_NAME_PREFIX
+from polars_nanook_ray.identity import SCHEDULER
 
 from .conftest import RayClusterFactory, TestQuery
 
@@ -61,7 +61,8 @@ def test_worker_restart_cleanup(
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
 
-    name, actor = next(iter(cluster._worker_actors.items()))
+    worker, actor = next(iter(cluster._worker_actors.items()))
+    name = worker.actor_name
     actor_pid = _actor_pid(cluster_id, name)
     binary_pid = ray.get(actor.get_worker_pid.remote())
 
@@ -93,7 +94,8 @@ def test_worker_binary_death_restarts_its_actor(
     cluster = ray_cluster(num_workers=1)
     cluster_id = cluster.config.cluster_id
 
-    name, actor = next(iter(cluster._worker_actors.items()))
+    worker, actor = next(iter(cluster._worker_actors.items()))
+    name = worker.actor_name
     actor_pid = _actor_pid(cluster_id, name)
     binary_pid = ray.get(actor.get_worker_pid.remote())
 
@@ -117,7 +119,7 @@ def test_scheduler_restarts_and_workers_register_again(
     cluster_id = cluster.config.cluster_id
     scheduler_actor = cluster._scheduler_actor
 
-    sched_pid = _actor_pid(cluster_id, SCHEDULER_NAME_PREFIX)
+    sched_pid = _actor_pid(cluster_id, SCHEDULER.actor_name)
     binary_pid = ray.get(scheduler_actor.get_scheduler_pid.remote())
 
     # the actor's death orphans the binary, the binary's death exits the actor
@@ -131,7 +133,7 @@ def test_scheduler_restarts_and_workers_register_again(
     new_sched_pid = None
     while time.monotonic() < deadline:
         with contextlib.suppress(AssertionError):
-            new_sched_pid = _actor_pid(cluster_id, SCHEDULER_NAME_PREFIX)
+            new_sched_pid = _actor_pid(cluster_id, SCHEDULER.actor_name)
             if new_sched_pid != sched_pid:
                 break
         time.sleep(1)

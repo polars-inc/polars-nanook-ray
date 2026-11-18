@@ -12,9 +12,9 @@ import ray
 from ray.actor import ActorHandle
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from polars_nanook_ray.actors import list_worker_names, worker_name
 from polars_nanook_ray.cluster import PolarsRayCluster
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.identity import WorkerId, list_workers
 
 from .utils import head_cluster, make_config, node_id, run_scheduler, wait_for_workers
 
@@ -55,7 +55,7 @@ def test_workers_spread_over_the_nodes_with_room(
 
     workers = wait_for_workers(config.cluster_id, NUM_CPU_NODES)
 
-    assert set(workers) == {worker_name(i) for i in range(NUM_CPU_NODES)}
+    assert set(workers) == {WorkerId(i) for i in range(NUM_CPU_NODES)}
     assert {node_id(actor) for actor in workers.values()} == cpu_node_ids
 
 
@@ -145,7 +145,7 @@ def test_stop_without_dashboard(
 
     PolarsRayCluster(config).stop()
 
-    assert list_worker_names(config.cluster_id) == set()
+    assert list_workers(config.cluster_id) == set()
 
 
 @pytest.mark.parametrize(
@@ -162,4 +162,4 @@ def test_start_fails_fast_when_a_worker_fits_no_node(
         PolarsRayCluster(config).start()
 
     assert time.monotonic() - started < 15
-    assert list_worker_names(config.cluster_id) == set()
+    assert list_workers(config.cluster_id) == set()

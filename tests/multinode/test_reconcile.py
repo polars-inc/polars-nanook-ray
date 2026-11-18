@@ -11,9 +11,9 @@ import ray
 from ray.actor import ActorHandle
 from ray.cluster_utils import Cluster
 
-from polars_nanook_ray.actors import list_worker_names
 from polars_nanook_ray.cluster import PolarsRayCluster
 from polars_nanook_ray.config import PolarsRayClusterConfig
+from polars_nanook_ray.identity import list_workers
 
 from .utils import head_cluster, make_config, node_id, run_scheduler, wait_for_workers
 
@@ -58,11 +58,11 @@ def test_worker_past_its_restart_limit_is_replaced(
     ray.get(scheduler.get_host.remote())
     workers = wait_for_workers(config.cluster_id, 2)
 
-    name, actor = next(iter(workers.items()))
+    worker, actor = next(iter(workers.items()))
     ray.kill(actor, no_restart=True)
 
     workers = wait_for_workers(config.cluster_id, 2)
-    assert name in workers
+    assert worker in workers
 
 
 def test_ray_restarts_a_worker_of_a_lost_node_on_another_node(
@@ -76,7 +76,7 @@ def test_ray_restarts_a_worker_of_a_lost_node_on_another_node(
     actor = next(scheduler)
     try:
         ray.get(actor.rescale_worker_pool_to.remote(1))
-        ((name, handle),) = wait_for_workers(config.cluster_id, 1).items()
+        ((worker, handle),) = wait_for_workers(config.cluster_id, 1).items()
         lost = next(
             node for node in cluster.list_all_nodes() if node.node_id == node_id(handle)
         )
@@ -93,7 +93,7 @@ def test_ray_restarts_a_worker_of_a_lost_node_on_another_node(
             except ray.exceptions.ActorUnavailableError:
                 assert time.monotonic() < deadline
                 time.sleep(0.5)
-        assert set(wait_for_workers(config.cluster_id, 1)) == {name}
+        assert set(wait_for_workers(config.cluster_id, 1)) == {worker}
     finally:
         next(scheduler, None)
 
@@ -107,4 +107,4 @@ def test_stop_leaves_no_workers_behind(
     PolarsRayCluster(config).stop()
     time.sleep(3 * config.worker_reconcile_interval)
 
-    assert list_worker_names(config.cluster_id) == set()
+    assert list_workers(config.cluster_id) == set()

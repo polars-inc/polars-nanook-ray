@@ -10,8 +10,7 @@ from ray.cluster_utils import Cluster
 
 from polars_nanook_ray.actors import (
     PolarsSchedulerActor,
-    list_worker_names,
-    resolve_scheduler_name,
+    resolve_actor_handles,
     terminate_actors,
 )
 from polars_nanook_ray.actors.head_node import placement_options
@@ -23,6 +22,7 @@ from polars_nanook_ray.config import (
     PolarsSchedulerConfig,
     PolarsWorkerConfig,
 )
+from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
 
 def head_cluster() -> Cluster:
@@ -59,7 +59,7 @@ def make_config(worker_cpus: int = 1, **kwargs: typing.Any) -> PolarsRayClusterC
 def run_scheduler(config: PolarsRayClusterConfig) -> typing.Iterator[ActorHandle]:
     """Yield a scheduler actor on the head node, then stop it and its workers."""
     actor = PolarsSchedulerActor.options(  # type: ignore[attr-defined]
-        name=resolve_scheduler_name(),
+        name=SCHEDULER.actor_name,
         namespace=config.cluster_id,
         **placement_options(
             "scheduler",
@@ -75,15 +75,15 @@ def run_scheduler(config: PolarsRayClusterConfig) -> typing.Iterator[ActorHandle
     terminate_actors([actor], config.actor_response_timeout)
 
 
-def wait_for_workers(cluster_id: str, expected: int) -> dict[str, ActorHandle]:
+def wait_for_workers(cluster_id: str, expected: int) -> dict[WorkerId, ActorHandle]:
     deadline = time.monotonic() + 30
-    names = list_worker_names(cluster_id)
-    while len(names) != expected and time.monotonic() < deadline:
+    workers = list_workers(cluster_id)
+    while len(workers) != expected and time.monotonic() < deadline:
         time.sleep(0.5)
-        names = list_worker_names(cluster_id)
+        workers = list_workers(cluster_id)
 
-    assert len(names) == expected, sorted(names)
-    return {name: ray.get_actor(name, namespace=cluster_id) for name in names}
+    assert len(workers) == expected, sorted(workers)
+    return resolve_actor_handles(workers, cluster_id)
 
 
 def node_id(actor: ActorHandle) -> str:

@@ -11,7 +11,6 @@ from polars_nanook_ray.actors.utils import (
     _write_config,
 )
 from polars_nanook_ray.config import PolarsRayClusterConfig
-from polars_nanook_ray.engine_instance_id import EngineInstanceId
 from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
 
@@ -20,6 +19,7 @@ if typing.TYPE_CHECKING:
 
     from ray.actor import ActorHandle
 
+    from polars_nanook_ray.identity import WorkerId
 
 logger = logging.getLogger(__name__)
 
@@ -31,19 +31,16 @@ class PolarsWorkerActor:
     def __init__(
         self,
         config: PolarsRayClusterConfig,
-        worker_name: str,
+        worker_id: "WorkerId",
         scheduler_host: str,
     ) -> None:
         self.config_cluster: PolarsRayClusterConfig = config
 
-        self.worker_name = worker_name
+        self.worker_id = worker_id
         self.scheduler_host = scheduler_host
 
-        self._config_path: pathlib.Path = _resolve_config_path(self.worker_name)
-        self._runner = SubprocessRunner(
-            config.binary_path,
-            self.worker_name,
-        )
+        self._config_path: pathlib.Path = _resolve_config_path(self.worker_id)
+        self._runner = SubprocessRunner(config.binary_path, self.worker_id)
 
         self.worker_host: str = self._runner.host
         self.task_port: int | None = None
@@ -71,9 +68,9 @@ class PolarsWorkerActor:
 
         # Unique per start: a restarted worker registers as a new one rather than as the
         # worker it replaces, whose registration expires once its heartbeats stop.
-        instance_id = EngineInstanceId.new(self.worker_name)
+        instance_id = self.worker_id.new_instance_id()
         toml = self.config_cluster.config_worker(
-            str(instance_id),
+            instance_id,
             self.worker_host,
             self.scheduler_host,
             task_port=ports["task_port"],
@@ -82,7 +79,7 @@ class PolarsWorkerActor:
         _write_config(self._config_path, toml)
 
         logger.info(
-            "Starting %s on %s as %s", self.worker_name, self.worker_host, instance_id
+            "Starting %s on %s as %s", self.worker_id, self.worker_host, instance_id
         )
 
         env: dict[str, str] = {
@@ -118,17 +115,17 @@ class PolarsWorkerActor:
 
 def start_worker(
     config: PolarsRayClusterConfig,
-    name: str,
+    worker: "WorkerId",
     scheduler_host: str,
 ) -> "ActorHandle":
-    """Request the worker `name` from Ray, or return it if it already exists.
+    """Request `worker` from Ray, or return it if it already exists.
 
     Ray places it on a node with its CPUs and memory free, spreading the workers over
     the nodes as best it can; until one has room, it waits, as demand Ray's autoscaler
     can add nodes for.
     """
     actor = PolarsWorkerActor.options(  # type: ignore[attr-defined]
-        name=name,
+        name=worker.actor_name,
         namespace=config.cluster_id,
         get_if_exists=True,
         lifetime="detached",
@@ -136,8 +133,8 @@ def start_worker(
         num_cpus=config.worker.cpus_hint,
         memory=config.worker.memory_hint,
         scheduling_strategy="SPREAD",
-    ).remote(config, name, scheduler_host)
+    ).remote(config, worker, scheduler_host)
 
-    logger.info("Requested worker %s", name)
+    logger.info("Requested worker %s", worker)
 
     return actor
