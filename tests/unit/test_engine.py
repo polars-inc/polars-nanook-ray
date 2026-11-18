@@ -8,6 +8,10 @@ from polars_nanook_ray._engine import (
     SchedulerAddress,
     render_scheduler,
     render_worker,
+    scheduler_env,
+    scheduler_ports,
+    worker_env,
+    worker_ports,
 )
 from polars_nanook_ray._spec import build_spec
 from polars_nanook_ray.options import ServiceAccount, Storage
@@ -230,3 +234,293 @@ def test_unknown_key_in_mapping_rejected(keyword: str) -> None:
 
     with pytest.raises(ValueError, match=rf"(?s){keyword}.*typo"):
         build_spec(**keywords)
+
+
+@pytest.mark.parametrize(
+    ("keywords", "match"),
+    [
+        ({"min_workers": 1}, "`min_workers` requires `autoscale=True`"),
+        ({"max_workers": 4}, "`max_workers` requires `autoscale=True`"),
+        ({"name": "my/cluster"}, "name"),
+        ({"name": "-cluster"}, "name"),
+        ({"workers": -1}, "workers"),
+        ({"reconcile_interval": -1}, "reconcile_interval"),
+        ({"lineage": "kafka://broker"}, "lineage"),
+        ({"spill_dir": "spill"}, "spill_dir"),
+        ({"log_level": "warn"}, "log_level"),
+    ],
+)
+def test_invalid_keywords_rejected(keywords: dict, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        build_spec(license="/license.json", **keywords)
+
+
+@pytest.mark.parametrize(
+    ("lineage", "transport"),
+    [
+        ("stdout", {"stdio": {"output_stream": "stdout"}}),
+        ("stderr", {"stdio": {"output_stream": "stderr"}}),
+        ("https://lineage.example", {"http": {"endpoint": "https://lineage.example"}}),
+    ],
+)
+def test_lineage_transport(lineage: str, transport: dict) -> None:
+    spec = build_spec(license="/license.json", lineage=lineage)
+
+    assert _scheduler(spec)["lineage"] == {"transport": transport}
+    assert _worker(spec)["lineage"] == {"transport": transport}
+
+
+def test_no_lineage_by_default() -> None:
+    spec = build_spec(license="/license.json")
+
+    assert "lineage" not in _scheduler(spec)
+    assert "lineage" not in _worker(spec)
+
+
+def test_tls_and_auth_secure_client_port_and_dashboard() -> None:
+    spec = build_spec(
+        license="/license.json",
+        tls={"cert_file": "/cert.pem", "key_file": "/key.pem"},
+        auth={"url": "https://idp/jwks", "issuer": "https://idp", "audience": "aud"},
+    )
+
+    rendered = _scheduler(spec)
+    expected = {
+        "connection": {
+            "tls": {"certificate_key_file": "/cert.pem", "private_key_file": "/key.pem"}
+        },
+        "auth": {
+            "jwks": {
+                "url": "https://idp/jwks",
+                "issuers": "https://idp",
+                "audience": "aud",
+            }
+        },
+    }
+    assert rendered["scheduler"]["client_service"] == {"bind_addr": ":5051"} | expected
+    assert (
+        rendered["observatory"]["rest_api"]["service"]
+        == {"bind_addr": ":3001"} | expected
+    )
+
+
+def test_resolved_ports_bound_and_advertised() -> None:
+    spec = build_spec(license="/license.json")
+
+    scheduler = _scheduler(
+        spec,
+        ports={
+            "client": 7001,
+            "registration": 7002,
+            "dashboard": 7003,
+            "telemetry": 7004,
+        },
+    )
+    worker = toml.loads(
+        render_worker(
+            spec,
+            instance_id="worker-0",
+            host="10.0.0.2",
+            task_port=7005,
+            shuffle_port=7006,
+            scheduler=SchedulerAddress("10.0.0.1", 7002, 7004),
+        )
+    )
+
+    assert scheduler["scheduler"]["client_service"]["bind_addr"] == ":7001"
+    assert scheduler["scheduler"]["worker_service"]["bind_addr"] == ":7002"
+    assert scheduler["observatory"]["rest_api"]["service"]["bind_addr"] == ":7003"
+    assert scheduler["observatory"]["service"]["bind_addr"] == ":7004"
+    leader = {
+        "leader_instance_id": "scheduler",
+        "scheduler_service": {"public_addr": "10.0.0.1:7002"},
+        "observatory_service": {"public_addr": "10.0.0.1:7004"},
+    }
+    assert scheduler["static_leader"] == leader
+    assert worker["static_leader"] == leader
+    assert worker["worker"]["task_service"] == {
+        "bind_addr": ":7005",
+        "public_addr": "10.0.0.2:7005",
+    }
+    assert worker["worker"]["shuffle_service"] == {
+        "bind_addr": ":7006",
+        "public_addr": "10.0.0.2:7006",
+    }
+
+
+@pytest.mark.parametrize(
+    ("ports", "scheduler", "worker"),
+    [
+        (
+            None,
+            {
+                "client": 5051,
+                "registration": None,
+                "dashboard": 3001,
+                "telemetry": None,
+            },
+            {"task": None, "shuffle": None},
+        ),
+        (
+            {"client": None, "task": 6000, "shuffle": 6001, "telemetry": 4317},
+            {
+                "client": None,
+                "registration": None,
+                "dashboard": 3001,
+                "telemetry": 4317,
+            },
+            {"task": 6000, "shuffle": 6001},
+        ),
+    ],
+)
+def test_ports_to_bind(ports: dict | None, scheduler: dict, worker: dict) -> None:
+    spec = build_spec(license="/license.json", ports=ports)
+
+    assert scheduler_ports(spec) == scheduler
+    assert worker_ports(spec) == worker
+
+
+def test_observatory_off_binds_no_dashboard_or_telemetry() -> None:
+    spec = build_spec(license="/license.json", observatory=False, host_metrics=False)
+
+    assert scheduler_ports(spec) == {"client": 5051, "registration": None}
+    rendered = _scheduler(spec, ports={"client": 5051, "registration": 5050})
+    assert rendered["observatory"] == {"enabled": False}
+    assert rendered["monitoring"] == {"enabled": False}
+    assert rendered["static_leader"]["observatory_service"] == {
+        "public_addr": "10.0.0.1:5049"
+    }
+
+
+def test_observatory_and_host_metrics_on_by_default() -> None:
+    rendered = _scheduler(build_spec(license="/license.json"))
+
+    assert rendered["observatory"] == {
+        "enabled": True,
+        "max_metrics_bytes_total": 100 * 1024**2,
+        "database_path": "/tmp/polars/observatory/data.db",
+        "service": {"bind_addr": ":5049"},
+        "rest_api": {"service": {"bind_addr": ":3001"}},
+    }
+    assert rendered["monitoring"] == {
+        "enabled": True,
+        "host_metrics": {"enabled": True},
+    }
+
+
+def test_access_settings() -> None:
+    spec = build_spec(license="/license.json", require_user=True, allow_local_io=False)
+
+    scheduler = _scheduler(spec)["scheduler"]
+    assert scheduler["deny_anonymous_users"] is True
+    assert scheduler["allow_local_scans"] is False
+    assert scheduler["allow_local_sinks"] is False
+
+
+@pytest.mark.parametrize(
+    ("keywords", "per_query"),
+    [
+        ({}, {"max_workers_per_query": 1, "default_workers_per_query": 1}),
+        ({"workers": 4}, {"max_workers_per_query": 4, "default_workers_per_query": 4}),
+        (
+            {"workers": 2, "autoscale": True, "max_workers": 8},
+            {"max_workers_per_query": 8, "default_workers_per_query": 2},
+        ),
+        (
+            {"workers": 0, "autoscale": True, "min_workers": 3},
+            {"default_workers_per_query": 3},
+        ),
+        ({"workers": 0, "autoscale": True}, {"default_workers_per_query": 1}),
+        ({"workers": 0}, {}),
+    ],
+)
+def test_workers_per_query(keywords: dict, per_query: dict) -> None:
+    rendered = _scheduler(
+        build_spec(license="/license.json", **keywords), scaler_port=4100
+    )
+
+    keys = ("max_workers_per_query", "default_workers_per_query")
+    assert {k: v for k, v in rendered["scheduler"].items() if k in keys} == per_query
+
+
+def test_autoscale_points_engine_at_scaler_port() -> None:
+    spec = build_spec(license="/license.json", autoscale=True)
+
+    rendered = _scheduler(spec, scaler_port=41234)
+
+    assert rendered["scaling"] == {
+        "enabled": True,
+        "rest": {"uri": "http://127.0.0.1:41234"},
+    }
+
+
+def test_autoscale_needs_scaler_port() -> None:
+    with pytest.raises(ValueError, match="scaling"):
+        _scheduler(build_spec(license="/license.json", autoscale=True))
+
+
+def test_no_autoscale_by_default() -> None:
+    assert _scheduler(build_spec(license="/license.json"))["scaling"] == {
+        "enabled": False
+    }
+
+
+@pytest.mark.parametrize(
+    ("keywords", "resources"),
+    [
+        ({}, {"cpu_reserved": "1.0"}),
+        ({"cpus": 0}, {}),
+        ({"cpus": 2.5, "memory": 4}, {"cpu_reserved": "2.5"}),
+        (
+            {"memory": 0.5, "enforce_memory_limit": True},
+            {"cpu_reserved": "1.0", "memory_limit": 512 * 1024**2},
+        ),
+    ],
+)
+def test_worker_resources(keywords: dict, resources: dict) -> None:
+    spec = build_spec(license="/license.json", **keywords)
+
+    worker = _worker(spec)
+    assert {k: worker[k] for k in ("cpu_reserved", "memory_limit") if k in worker} == (
+        resources
+    )
+    scheduler = _scheduler(spec)
+    assert "cpu_reserved" not in scheduler
+    assert "memory_limit" not in scheduler
+
+
+def test_engine_environment() -> None:
+    spec = build_spec(
+        license="/license.json",
+        accept_eula=True,
+        log_level="trace",
+        spill_dir="/scratch",
+        env_vars={"RUST_BACKTRACE": "1", "FOO": "bar"},
+    )
+
+    expected = {
+        "POLARS_EULA_ACCEPTED": "yes",
+        "PLC_LOG_LEVEL": "trace",
+        "RUST_BACKTRACE": "1",
+        "FOO": "bar",
+    }
+    assert scheduler_env(spec) == expected
+    assert worker_env(spec) == expected | {"POLARS_TEMP_DIR": "/scratch"}
+
+
+def test_engine_environment_defaults() -> None:
+    spec = build_spec(license="/license.json")
+
+    assert worker_env(spec) == {
+        "POLARS_EULA_ACCEPTED": "no",
+        "PLC_LOG_LEVEL": "info",
+        "RUST_BACKTRACE": "full",
+        "POLARS_TEMP_DIR": "/tmp/polars/temporary-data",
+    }
+
+
+def test_name_is_cluster_id() -> None:
+    spec = build_spec(license="/license.json", name="team-a.prod_1")
+
+    assert _scheduler(spec)["cluster_id"] == "team-a.prod_1"
+    assert _worker(spec)["cluster_id"] == "team-a.prod_1"
