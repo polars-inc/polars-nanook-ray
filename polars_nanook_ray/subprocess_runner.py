@@ -1,11 +1,13 @@
 import functools
 import logging
+import os
 import pathlib
 import shutil
 import socket
 import subprocess
 import sys
 import sysconfig
+import threading
 
 import psutil
 import ray
@@ -52,6 +54,7 @@ class SubprocessRunner:
         self.name = name
 
         self._handle: subprocess.Popen[bytes] | None = None
+        self._stopping = threading.Event()
 
     def _raise_if_exited(self) -> None:
         """Raise if the binary exited, as nothing restarts it."""
@@ -86,12 +89,38 @@ class SubprocessRunner:
 
     def start(self, config_path: pathlib.Path, env: dict[str, str]) -> None:
         """Launch the service of the config given, without waiting for it."""
+        self._stopping.clear()
         args = _service_args(config_path)
         self._handle = subprocess.Popen([*self.command, *args], env=env)
         logger.info("Process ID of %s: %d", self.name, self._handle.pid)
+        threading.Thread(
+            target=self._exit_with_binary,
+            args=(self._handle,),
+            name=f"{self.name}-watch",
+            daemon=True,
+        ).start()
+
+    def _exit_with_binary(self, handle: "subprocess.Popen[bytes]") -> None:
+        """Exit the actor process when the binary exits unasked, for Ray to restart it.
+
+        Ray only sees the actor: without this, an actor whose binary died stays alive
+        and its restart limit never applies.
+        """
+        exit_code = handle.wait()
+        if self._stopping.is_set():
+            return
+        logger.error(
+            "%s (%d) exited with code %d; exiting its actor",
+            self.name,
+            handle.pid,
+            exit_code,
+        )
+        logging.shutdown()
+        os._exit(1)
 
     def stop(self) -> None:
         """Stop the binary, killing it on timeout; a no-op when not started."""
+        self._stopping.set()
         if self._handle is not None:
             logger.info("Stopping %s (%d)", self.name, self._handle.pid)
             self._handle.terminate()
