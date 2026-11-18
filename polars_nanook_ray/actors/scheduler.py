@@ -1,10 +1,12 @@
 import logging
 import os
+import threading
 import typing
 
 import ray
 
 from polars_nanook_ray.actors.placement import (
+    WorkerPoolReconciler,
     by_index,
     list_worker_names,
     plan_workers,
@@ -67,14 +69,32 @@ class PolarsSchedulerActor:
 
         self.scheduler_host: str = self._runner.host
 
+        self._reconciling = threading.Event()
         self.start()
         _handle_sigterm(self.stop)
+
+        if config.worker_reconcile_interval > 0:
+            self._reconciler = WorkerPoolReconciler(
+                config.worker_reconcile_interval,
+                start=self._start_worker,
+                running=self._list_workers,
+            )
+            threading.Thread(
+                target=self._reconcile_workers, name="reconcile-workers", daemon=True
+            ).start()
 
     def _start_worker(self, name: str) -> None:
         start_worker(self.config_cluster, name, self.scheduler_host)
 
     def _list_workers(self) -> set[str]:
         return list_worker_names(self.config_cluster.cluster_id)
+
+    def _reconcile_workers(self) -> None:
+        while not self._reconciling.wait(self._reconciler.interval):
+            try:
+                self._reconciler.reconcile(self.num_workers)
+            except Exception:
+                logger.exception("Could not reconcile the worker pool")
 
     def __ray_shutdown__(self) -> None:
         self.stop()
@@ -117,8 +137,13 @@ class PolarsSchedulerActor:
 
         self._runner.start(self._config_path, env)
 
+    def stop_reconciling(self) -> None:
+        """Stop reconciling the worker pool, before the workers are stopped."""
+        self._reconciling.set()
+
     def stop(self) -> None:
         """Terminate the scheduler process and clean up."""
+        self.stop_reconciling()
         self._runner.stop()
 
         _remove_config(self._config_path)
@@ -205,6 +230,9 @@ class PolarsSchedulerActor:
             )
             num_workers = clamped
 
+        # set first, for the reconciler not to replace the workers removed below
+        self.num_workers = num_workers
+
         worker_names = self._list_workers()
 
         _delete = _resolve_worker_actor_names(delete, worker_names)
@@ -230,5 +258,3 @@ class PolarsSchedulerActor:
                     to_remove |= remaining - _keep
 
             self._remove_workers(to_remove)
-
-        self.num_workers = num_workers  # new value

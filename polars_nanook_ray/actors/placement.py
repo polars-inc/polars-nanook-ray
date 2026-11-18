@@ -1,4 +1,5 @@
 import itertools
+import logging
 import re
 import typing
 
@@ -7,6 +8,8 @@ import ray
 WORKER_NAME_PREFIX = "worker"
 
 _WORKER_NAME = re.compile(rf"{WORKER_NAME_PREFIX}-(0|[1-9][0-9]*)")
+
+logger = logging.getLogger(__name__)
 
 
 class NoRoomForWorkers(RuntimeError):
@@ -80,3 +83,30 @@ def check_room(cpus: float, memory: float) -> None:
 
 def _gib(memory: float) -> str:
     return f"{memory / 1024**3:g} GiB"
+
+
+class WorkerPoolReconciler:
+    """Keep the worker pool at its target count by starting missing workers.
+
+    Ray restarts a worker actor within its restart limit, on another node if its node
+    is lost, but not past that limit. Each `reconcile` starts workers at the lowest
+    free indices for the pool to reach the target again.
+    """
+
+    def __init__(
+        self,
+        interval: float,
+        start: typing.Callable[[str], object],
+        running: typing.Callable[[], set[str]],
+    ) -> None:
+        self.interval = interval
+        self._start = start
+        self._running = running
+
+    def reconcile(self, target: int) -> list[str]:
+        """Start workers up to `target`; return the names of those started."""
+        started = plan_workers(target, self._running())
+        for name in started:
+            logger.warning("Replacing worker %s", name)
+            self._start(name)
+        return started
