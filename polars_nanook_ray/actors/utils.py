@@ -1,17 +1,13 @@
 import logging
 import os
-import pathlib
-import secrets
-import shutil
 import signal
-import tempfile
 import typing
 
 import ray
 from ray.actor import ActorHandle
 
 if typing.TYPE_CHECKING:
-    from polars_nanook_ray.identity import Identity, WorkerId
+    from polars_nanook_ray.identity import WorkerId
 
 logger = logging.getLogger(__name__)
 
@@ -30,23 +26,6 @@ def _log_to_stderr() -> None:
     handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
     package.addHandler(handler)
     package.setLevel(os.getenv("LOGLEVEL", "INFO").upper())
-
-
-def _resolve_config_path(identity: "Identity") -> pathlib.Path:
-    return pathlib.Path(
-        tempfile.gettempdir(),
-        f"{identity.actor_name}-{secrets.token_hex(8)}",
-        "config.toml",
-    )
-
-
-def _write_config(config_path: pathlib.Path, config: str) -> None:
-    config_path.parent.mkdir(mode=0o700)
-    config_path.write_text(config)
-
-
-def _remove_config(config_path: pathlib.Path) -> None:
-    shutil.rmtree(config_path.parent, ignore_errors=True)
 
 
 def _handle_sigterm(func: typing.Callable[[], None]) -> None:

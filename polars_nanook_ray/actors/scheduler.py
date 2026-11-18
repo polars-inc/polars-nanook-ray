@@ -1,5 +1,4 @@
 import logging
-import os
 import typing
 
 import ray
@@ -8,19 +7,12 @@ from polars_nanook_ray.actors.pool import WorkerPool
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
     _log_to_stderr,
-    _remove_config,
-    _resolve_config_path,
-    _write_config,
 )
 from polars_nanook_ray.actors.worker import RayWorkers
 from polars_nanook_ray.config import PolarsRayClusterConfig
 from polars_nanook_ray.identity import SCHEDULER, WorkerId
 from polars_nanook_ray.ports import resolve_ports
 from polars_nanook_ray.subprocess_runner import SubprocessRunner
-
-if typing.TYPE_CHECKING:
-    import pathlib
-
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +32,6 @@ class PolarsSchedulerActor:
         _log_to_stderr()
         self.config_cluster: PolarsRayClusterConfig = config
 
-        self._config_path: pathlib.Path = _resolve_config_path(SCHEDULER)
         self._runner = SubprocessRunner(config.binary_path, SCHEDULER)
 
         self.scheduler_host: str = self._runner.host
@@ -63,7 +54,6 @@ class PolarsSchedulerActor:
         resolve_ports(self.config_cluster.config_bind_ports_scheduler())
 
         toml = self.config_cluster.config_scheduler(self.scheduler_host)
-        _write_config(self._config_path, toml)
 
         logger.info(
             "Starting scheduler (%s observatory) on %s",
@@ -71,14 +61,7 @@ class PolarsSchedulerActor:
             self.scheduler_host,
         )
 
-        env: dict[str, str] = {
-            **os.environ,
-            "POLARS_EULA_ACCEPTED": "yes" if self.config_cluster.accept_eula else "no",
-            "PLC_LOG_LEVEL": self.config_cluster.log_level,
-            "RUST_BACKTRACE": self.config_cluster.rust_backtrace,
-        }
-
-        self._runner.start(self._config_path, env)
+        self._runner.start(toml, self.config_cluster.engine_env())
 
     def stop(self) -> None:
         """Stop the workers, then the scheduler process."""
@@ -90,13 +73,9 @@ class PolarsSchedulerActor:
         self._pool.halt()
         self._runner.stop()
 
-        _remove_config(self._config_path)
-
     def is_ready(self) -> bool:
         """Return whether the scheduler process is alive and accepting registration."""
-        self._runner._raise_if_exited()
-
-        return self._runner.is_alive() and self._runner.is_listening(
+        return self._runner.is_ready(
             self.config_cluster.scheduler.worker_registration_port
         )
 
