@@ -8,6 +8,7 @@ from ray.exceptions import ActorDiedError, ActorUnavailableError
 from polars_nanook_ray.actors.pool import Node, WorkerExited
 from polars_nanook_ray.actors.utils import (
     _handle_sigterm,
+    _log_to_stderr,
     _remove_config,
     _resolve_config_path,
     _write_config,
@@ -41,6 +42,7 @@ class PolarsWorkerActor:
         worker_id: WorkerId,
         scheduler_host: str,
     ) -> None:
+        _log_to_stderr()
         self.config_cluster: PolarsRayClusterConfig = config
 
         self.worker_id = worker_id

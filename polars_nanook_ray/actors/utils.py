@@ -1,4 +1,5 @@
 import logging
+import os
 import pathlib
 import secrets
 import shutil
@@ -13,6 +14,22 @@ if typing.TYPE_CHECKING:
     from polars_nanook_ray.identity import Identity, WorkerId
 
 logger = logging.getLogger(__name__)
+
+
+def _log_to_stderr() -> None:
+    """Log this package's records to stderr, which Ray collects, in an actor process.
+
+    Only in our actors: the driver is the user's process, whose logging is theirs to
+    set up. A process whose root logger has handlers, e.g. from Ray's
+    `logging_config`, keeps its own setup. `LOGLEVEL` sets the level, INFO by default.
+    """
+    package = logging.getLogger("polars_nanook_ray")
+    if logging.getLogger().handlers or package.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    package.addHandler(handler)
+    package.setLevel(os.getenv("LOGLEVEL", "INFO").upper())
 
 
 def _resolve_config_path(identity: "Identity") -> pathlib.Path:

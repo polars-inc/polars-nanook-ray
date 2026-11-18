@@ -170,6 +170,11 @@ The scheduler and scaler actors are running in `detached` mode and survive past 
 script: one can reconnect with the same `ray.init()` and `cluster` gymnastics from
 another process. The workers belong to the scheduler actor: they stop when it does, and
 a restarted scheduler starts new ones.
+
+The actors log to their Ray logs at INFO, or at the level the `LOGLEVEL` environment
+variable sets. Importing the package leaves your own process's logging alone: to see the
+cluster's progress messages in your script, set up logging there, for example with
+`logging.basicConfig(level=logging.INFO)`.
 To clean all actors and underlying processes, Ray itself needs to be shutdown
 using the following command:
 
