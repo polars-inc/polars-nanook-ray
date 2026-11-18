@@ -58,8 +58,6 @@ class PolarsSchedulerActor:
         if self._runner.is_started():
             return
 
-        self._runner.stop_orphans(self.config_cluster.cluster_id)
-
         resolve_ports(self.config_cluster.config_bind_ports_scheduler())
 
         toml = self.config_cluster.config_scheduler(self.scheduler_host)
@@ -86,7 +84,7 @@ class PolarsSchedulerActor:
         self._stop_scheduler()
 
     def _stop_scheduler(self) -> None:
-        """Terminate the scheduler process and clean up, leaving the workers."""
+        """Terminate the scheduler process and clean up; Ray then stops its workers."""
         self._pool.halt()
         self._runner.stop()
 
