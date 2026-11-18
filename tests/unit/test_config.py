@@ -14,6 +14,12 @@ def test_construction_validates_without_ray() -> None:
     assert not ray.is_initialized()
 
 
+def test_accept_eula_is_a_keyword() -> None:
+    ctx = RayClusterContext(license="/license.json", accept_eula=True)
+
+    assert ctx._spec.accept_eula
+
+
 def test_relative_binary_path_made_absolute() -> None:
     ctx = RayClusterContext(license="/license.json", binary_path="bin/polars")
 

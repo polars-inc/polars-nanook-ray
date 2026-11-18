@@ -375,6 +375,26 @@ def test_engine_environment() -> None:
     assert worker_env(spec) == expected | {"POLARS_TEMP_DIR": "/scratch"}
 
 
+def test_accepting_the_eula_sets_it_for_every_engine() -> None:
+    spec = build_spec(license="/license.json", accept_eula=True)
+
+    assert scheduler_env(spec)["POLARS_EULA_ACCEPTED"] == "yes"
+    assert worker_env(spec)["POLARS_EULA_ACCEPTED"] == "yes"
+
+
+def test_the_eula_is_not_accepted_by_default() -> None:
+    spec = build_spec(license="/license.json")
+
+    assert "POLARS_EULA_ACCEPTED" not in scheduler_env(spec)
+    assert "POLARS_EULA_ACCEPTED" not in worker_env(spec)
+
+
+def test_env_vars_can_accept_the_eula_too() -> None:
+    spec = build_spec(license="/license.json", env_vars={"POLARS_EULA_ACCEPTED": "1"})
+
+    assert scheduler_env(spec)["POLARS_EULA_ACCEPTED"] == "1"
+
+
 def test_overrides_merge_replace_and_delete() -> None:
     spec = build_spec(
         license="/license.json",

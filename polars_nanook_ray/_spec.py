@@ -65,6 +65,7 @@ class ClusterSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     license: LicenseFile | LicenseServer | ServiceAccount
+    accept_eula: bool = False
     name: str = Field(default="polars-nanook", pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
     workers: int = Field(default=1, ge=0)
     cpus: float = Field(default=1, ge=0)
@@ -141,6 +142,7 @@ StorageLike: typing.TypeAlias = (
 def build_spec(
     *,
     license: str | os.PathLike[str] | ServiceAccount | typing.Mapping[str, typing.Any],
+    accept_eula: bool = False,
     name: str = "polars-nanook",
     workers: int = 1,
     cpus: float = 1,

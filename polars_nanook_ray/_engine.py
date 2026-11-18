@@ -80,6 +80,7 @@ def scheduler_env(spec: "ClusterSpec") -> dict[str, str]:
     return {
         "PLC_LOG_LEVEL": spec.log_level,
         "RUST_BACKTRACE": "full",
+        **({"POLARS_EULA_ACCEPTED": "yes"} if spec.accept_eula else {}),
         **spec.env_vars,
     }
 
