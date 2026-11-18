@@ -43,7 +43,6 @@ ray.init(address="auto")
 
 with RayComputeContext(
     license="/path/to/license.json",
-    accept_eula=True,  # see the license section below
     workers=4,  # 1 CPU and 2 GiB each: Ray places them where they fit
 ) as ctx:
     print(
@@ -103,10 +102,8 @@ With a license server, the scheduler and the workers register with it. This
 package does not run the license server: deploy it as its own service, outside
 Ray, and start it before any cluster that points at it.
 
-With a license file, the engine asks you to accept its EULA. Accept it with
-`accept_eula=True`, which sets `POLARS_EULA_ACCEPTED=yes` for every engine. Setting
-that variable on the Ray nodes, or through `env_vars`, works too. Without it the
-engine prints the EULA and refuses to start.
+With a license file, the engine asks you to accept its EULA (accepted by
+default).
 
 ## Storage
 
@@ -356,14 +353,14 @@ RayComputeContext(
 
 These settings have no keyword and are set this way:
 
-| Setting | Override |
-| --- | --- |
-| Reject anonymous queries | `scheduler_overrides={"scheduler": {"deny_anonymous_users": True}}` |
-| No scans or sinks on local disk | `scheduler_overrides={"scheduler": {"allow_local_scans": False, "allow_local_sinks": False}}` |
-| No host metrics | `{"monitoring": {"host_metrics": {"enabled": False}}}` in both overrides |
-| Lineage events to stdout | `{"lineage": {"transport": {"stdio": {"output_stream": "stdout"}}}}` in both overrides |
-| Lineage events to an endpoint | `{"lineage": {"transport": {"http": {"endpoint": "https://..."}}}}` in both overrides |
-| Cap worker memory | `worker_overrides={"memory_limit": <bytes>}`, see [resource limits](#resource-requests-and-limits) |
+| Setting                         | Override                                                                                           |
+| ------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Reject anonymous queries        | `scheduler_overrides={"scheduler": {"deny_anonymous_users": True}}`                                |
+| No scans or sinks on local disk | `scheduler_overrides={"scheduler": {"allow_local_scans": False, "allow_local_sinks": False}}`      |
+| No host metrics                 | `{"monitoring": {"host_metrics": {"enabled": False}}}` in both overrides                           |
+| Lineage events to stdout        | `{"lineage": {"transport": {"stdio": {"output_stream": "stdout"}}}}` in both overrides             |
+| Lineage events to an endpoint   | `{"lineage": {"transport": {"http": {"endpoint": "https://..."}}}}` in both overrides              |
+| Cap worker memory               | `worker_overrides={"memory_limit": <bytes>}`, see [resource limits](#resource-requests-and-limits) |
 
 `license`, the storage keywords, `ports`, `autoscale` and `tls` also accept plain
 mappings, so a whole cluster can come from a YAML file:

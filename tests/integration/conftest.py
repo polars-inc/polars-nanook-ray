@@ -64,7 +64,6 @@ def make_context(**keywords: typing.Any) -> RayComputeContext:
     keywords.setdefault("scheduler_overrides", no_host_metrics)
     keywords.setdefault("worker_overrides", no_host_metrics)
     keywords.setdefault("ports", Ports(client=None, dashboard=None))
-    keywords.setdefault("env_vars", {"POLARS_EULA_ACCEPTED": "yes"})
     return RayComputeContext(**keywords)
 
 
