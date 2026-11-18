@@ -166,9 +166,10 @@ workers: `start()` only tops the pool up to `num_workers`. Each start of a worke
 engine registers with the scheduler under a new instance ID, e.g.
 `worker-0-1a2b3c4d`.
 
-The actors are running in `detached` mode and survive past the script: one can
-reconnect with the same `ray.init()` and `cluster` gymnastics from another
-process.
+The scheduler and scaler actors are running in `detached` mode and survive past the
+script: one can reconnect with the same `ray.init()` and `cluster` gymnastics from
+another process. The workers belong to the scheduler actor: they stop when it does, and
+a restarted scheduler starts new ones.
 To clean all actors and underlying processes, Ray itself needs to be shutdown
 using the following command:
 
@@ -190,6 +191,9 @@ Note the cluster always _starts_ `num_workers` workers: the bounds are reported
 back to the binary on `GET /scale_config`, seeded into `max_workers_per_query`,
 and only enforced on rescaling, where a `POST /scale_to` count outside them is
 clamped.
+A scale-down that names no workers to keep or delete removes the highest indices
+first. A scale-up starts workers whether or not a node has room for them yet, so
+an autoscaling Ray cluster grows with the engine's requests.
 Requesting more workers is done via the client: `.distributed(min_workers=X)`.
 
 The HTTP server is unauthenticated and binds `127.0.0.1`. It accepts only

@@ -4,6 +4,7 @@ Several raylets run on this one machine, without the dashboard. The binaries are
 replaced by a stub that sleeps, so no license is needed: only the actors are under test.
 """
 
+import socket
 import time
 import typing
 
@@ -12,11 +13,27 @@ import ray
 from ray.actor import ActorHandle
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
+from polars_nanook_ray.actors import WorkerExited
 from polars_nanook_ray.cluster import PolarsRayCluster
-from polars_nanook_ray.config import PolarsRayClusterConfig
-from polars_nanook_ray.identity import WorkerId, list_workers
+from polars_nanook_ray.config import (
+    PolarsObservatoryConfig,
+    PolarsRayClusterConfig,
+    PolarsScalingConfig,
+    PolarsSchedulerConfig,
+    PolarsWorkerConfig,
+)
+from polars_nanook_ray.identity import SCHEDULER, WorkerId, list_workers
 
-from .utils import head_cluster, make_config, node_id, run_scheduler, wait_for_workers
+from .utils import (
+    FAILING_ENGINE,
+    LISTENING_ENGINE,
+    free_port,
+    head_cluster,
+    make_config,
+    node_id,
+    run_scheduler,
+    wait_for_workers,
+)
 
 NUM_CPU_NODES = 2
 
@@ -163,3 +180,102 @@ def test_start_fails_fast_when_a_worker_fits_no_node(
 
     assert time.monotonic() - started < 15
     assert list_workers(config.cluster_id) == set()
+    with pytest.raises(ValueError, match=SCHEDULER.actor_name):
+        ray.get_actor(SCHEDULER.actor_name, namespace=config.cluster_id)
+
+
+def _assert_stopped(config: PolarsRayClusterConfig) -> None:
+    assert list_workers(config.cluster_id) == set()
+    with pytest.raises(ValueError, match=SCHEDULER.actor_name):
+        ray.get_actor(SCHEDULER.actor_name, namespace=config.cluster_id)
+
+
+def test_start_times_out_on_workers_waiting_for_room(
+    cpu_node_ids: set[str],  # noqa: ARG001
+) -> None:
+    config = make_config(
+        binary_path=str(LISTENING_ENGINE),
+        num_workers=NUM_CPU_NODES + 1,
+        worker_cpus=2,
+        startup_timeout=5,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="waiting for a Ray node with 2 CPU"):
+            PolarsRayCluster(config).start()
+    finally:
+        PolarsRayCluster(config).stop()
+
+    _assert_stopped(config)
+
+
+def test_start_waits_for_the_scaler_scheduler_and_workers(
+    cpu_node_ids: set[str],  # noqa: ARG001
+) -> None:
+    scheduler = PolarsSchedulerConfig(
+        cpus_hint=0,
+        memory_hint=1,
+        client_port=free_port(),
+        worker_registration_port=free_port(),
+        observatory=PolarsObservatoryConfig(enabled=False),
+        scaling=PolarsScalingConfig(enabled=True, port=free_port()),
+    )
+    config = make_config(
+        binary_path=str(LISTENING_ENGINE),
+        num_workers=NUM_CPU_NODES,
+        scheduler=scheduler,
+    )
+    cluster = PolarsRayCluster(config)
+
+    try:
+        cluster.start()
+
+        assert len(list_workers(config.cluster_id)) == NUM_CPU_NODES
+        assert ray.get(cluster._scheduler_actor.not_ready.remote()) == []
+        host = ray.get(cluster._scheduler_actor.get_host.remote())
+        assert cluster.get_client_addr() == f"{host}:{scheduler.client_port}"
+        assert cluster.get_dashboard_addr() == (
+            "The observatory is not enabled on this cluster"
+        )
+    finally:
+        cluster.stop()
+
+    _assert_stopped(config)
+
+
+def test_start_fails_fast_when_a_worker_exits(
+    cpu_node_ids: set[str],  # noqa: ARG001
+) -> None:
+    with socket.socket() as listener:
+        listener.bind(("", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        config = make_config(
+            binary_path=str(LISTENING_ENGINE),
+            num_workers=1,
+            worker=PolarsWorkerConfig(cpus_hint=1, memory_hint=1, task_port=port),
+        )
+
+        started = time.monotonic()
+        with pytest.raises(WorkerExited, match=rf"{port} is already in use"):
+            PolarsRayCluster(config).start()
+
+    assert time.monotonic() - started < 15
+    PolarsRayCluster(config).stop()
+    _assert_stopped(config)
+
+
+def test_start_fails_fast_when_the_scheduler_exits(
+    cpu_node_ids: set[str],  # noqa: ARG001
+) -> None:
+    config = make_config(
+        binary_path=str(FAILING_ENGINE), num_workers=0, scheduler_max_restarts=1
+    )
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="scheduler exited"):
+        PolarsRayCluster(config).start()
+
+    assert time.monotonic() - started < 15
+    PolarsRayCluster(config).stop()
+    _assert_stopped(config)
