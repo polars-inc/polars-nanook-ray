@@ -73,9 +73,9 @@ class WorkerPool:
             running = self._workers.running()
             if num_workers > len(running):
                 self._check_room()
-            self._start_up_to(num_workers, running)
+            started = self._start_up_to(num_workers, running)
             self._target = max(self._target, num_workers)
-            return self._workers.running()
+            return running | set(started)
 
     def rescale(
         self,
@@ -145,9 +145,11 @@ class WorkerPool:
                 self._workers.terminate(running)
 
     def status(self) -> PoolStatus:
-        """Return the existing workers, and the target."""
-        with self._lock:
-            return PoolStatus(self._workers.running(), self._target)
+        """Return the existing workers, and the target.
+
+        Does not wait for a rescale or reconcile in progress.
+        """
+        return PoolStatus(self._workers.running(), self._target)
 
     def _reconcile_until_halted(self, interval: float) -> None:
         while not self._halted.wait(interval):

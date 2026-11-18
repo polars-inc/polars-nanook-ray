@@ -367,3 +367,17 @@ def test_ensure_raises_a_lower_target() -> None:
     worker_pool.ensure(2)
 
     assert worker_pool.status().target == 2
+
+
+class SlowListing(InMemoryWorkers):
+    """Workers listed only once they are up, should Ray list a new actor late."""
+
+    def start(self, worker: WorkerId) -> None:
+        pass
+
+
+def test_ensure_returns_the_workers_it_started_before_they_are_listed() -> None:
+    workers = SlowListing()
+    workers.workers = workers_named(0)
+
+    assert pool(workers).ensure(2) == workers_named(0, 1)
