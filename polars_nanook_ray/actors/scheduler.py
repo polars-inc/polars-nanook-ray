@@ -5,8 +5,8 @@ import ray
 
 from polars_nanook_ray._engine import (
     SchedulerAddress,
-    local_dirs,
     render_scheduler,
+    scheduler_dirs,
     scheduler_env,
     scheduler_ports,
 )
@@ -73,7 +73,7 @@ class PolarsSchedulerActor:
         if self._runner.is_started():
             return
 
-        make_dirs(local_dirs(self._spec))
+        make_dirs(scheduler_dirs(self._spec))
 
         logger.info(
             "Starting scheduler (%s observatory) on %s",

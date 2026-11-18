@@ -49,14 +49,9 @@ def worker_ports(spec: "ClusterSpec") -> dict[str, int | None]:
     return {"task": spec.ports.task, "shuffle": spec.ports.shuffle}
 
 
-def local_dirs(spec: "ClusterSpec") -> list[str]:
-    """Return the local directories the engines need on each node."""
-    dirs = [
-        storage.url
-        for storage in (spec.shuffle_data, spec.anonymous_results, spec.checkpoints)
-        if storage is not None and storage.backend == "local"
-    ]
-    dirs.append(spec.spill_dir)
+def scheduler_dirs(spec: "ClusterSpec") -> list[str]:
+    """Return the local directories the scheduler's engine needs on its node."""
+    dirs = _local_storage(spec.anonymous_results)
     if spec.observatory:
         dirs.append(str(pathlib.PurePath(OBSERVATORY_DATABASE).parent))
     if isinstance(spec.license, ServiceAccount):
@@ -64,10 +59,25 @@ def local_dirs(spec: "ClusterSpec") -> list[str]:
     return dirs
 
 
+def worker_dirs(spec: "ClusterSpec") -> list[str]:
+    """Return the local directories a worker's engine needs on its node."""
+    return [
+        *_local_storage(spec.shuffle_data, spec.anonymous_results),
+        spec.spill_dir,
+    ]
+
+
+def _local_storage(*locations: "Storage | None") -> list[str]:
+    return [
+        storage.url
+        for storage in locations
+        if storage is not None and storage.backend == "local"
+    ]
+
+
 def scheduler_env(spec: "ClusterSpec") -> dict[str, str]:
     """Return the environment of the scheduler's engine process."""
     return {
-        "POLARS_EULA_ACCEPTED": "yes" if spec.accept_eula else "no",
         "PLC_LOG_LEVEL": spec.log_level,
         "RUST_BACKTRACE": "full",
         **spec.env_vars,
@@ -155,8 +165,6 @@ def render_worker(
         "heartbeat_period": _HEARTBEAT_PERIOD,
         "shuffle_location": _storage(spec.shuffle_data),
     }
-    if spec.checkpoints is not None:
-        worker["checkpoint_location"] = _storage(spec.checkpoints)
     if spec.env_vars:
         worker["env_vars"] = dict(spec.env_vars)
 

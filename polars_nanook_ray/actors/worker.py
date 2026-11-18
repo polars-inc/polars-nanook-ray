@@ -6,8 +6,8 @@ from ray.exceptions import ActorDiedError, ActorUnavailableError
 
 from polars_nanook_ray._engine import (
     SchedulerAddress,
-    local_dirs,
     render_worker,
+    worker_dirs,
     worker_env,
     worker_ports,
 )
@@ -70,7 +70,7 @@ class PolarsWorkerActor:
 
         ports = resolve_ports(worker_ports(self._spec))
         self.task_port = ports["task"]
-        make_dirs(local_dirs(self._spec))
+        make_dirs(worker_dirs(self._spec))
 
         # Unique per start: a restarted worker registers as a new one rather than as the
         # worker it replaces, whose registration expires once its heartbeats stop.
