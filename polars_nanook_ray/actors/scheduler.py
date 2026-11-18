@@ -110,6 +110,10 @@ class PolarsSchedulerActor:
             return [str(SCHEDULER)]
         return [str(worker) for worker in sorted(self._pool.not_ready())]
 
+    def waiting_workers(self) -> list[str]:
+        """Return the workers waiting for their node to have room for them."""
+        return [str(worker) for worker in sorted(self._pool.waiting())]
+
     def get_host(self) -> str:
         """Return the IP address the scheduler is running on."""
         return self.scheduler_host

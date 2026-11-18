@@ -28,10 +28,14 @@ class WorkerSlot:
 
 @dataclasses.dataclass(frozen=True)
 class Node:
+    """A Ray node: its resources in all, and those no Ray work holds now."""
+
     node_id: str
     alive: bool
     cpus: float
     memory: float
+    free_cpus: float
+    free_memory: float
 
 
 class Workers(typing.Protocol):
@@ -41,6 +45,10 @@ class Workers(typing.Protocol):
 
     def running(self) -> set[WorkerId]:
         """Return the live workers."""
+        ...
+
+    def waiting(self) -> set[WorkerId]:
+        """Return the live workers waiting for their node to have room for them."""
         ...
 
     def start(self, slot: WorkerSlot) -> None:
@@ -95,6 +103,8 @@ class WorkerPool:
         self._halted = threading.Event()
         # started by the last `ensure`, and not seen ready since
         self._starting: set[WorkerId] = set()
+        # worker -> when a refill first saw it waiting for room on its node
+        self._waiting_since: dict[WorkerId, float] = {}
 
     def ensure(self, num_workers: int) -> set[WorkerId]:
         """Start workers until there are at least `num_workers`; return them all."""
@@ -168,20 +178,21 @@ class WorkerPool:
 
         Ray restarts a worker within its restart limit, but not past it, nor once its
         node is gone. A slot refilled again soon after is backed off exponentially,
-        and other free slots are used meanwhile. `now` is in monotonic seconds.
+        and other free slots are used meanwhile. A worker waiting for room on its node,
+        held by other Ray work, for `startup_timeout` is removed, to start on a node
+        with room. `now` is in monotonic seconds.
         """
         with self._lock:
             if self._halted.is_set():
                 return []
 
-            running = self._workers.running()
-            slots = self._slots()
-            offered = {s.worker_id for s in slots}
+            running = self._workers.running() - self._remove_waiting(now)
+            offered = {s.worker_id for s in self._slots()}
             for worker, (_, retry_at) in list(self._backoff.items()):
                 if worker not in offered or (worker in running and now >= retry_at):
                     del self._backoff[worker]  # its node is gone, or it stayed up
 
-            free = [s for s in slots if s.worker_id not in running]
+            free = self._free_slots(running)
             ready = [
                 s for s in free if now >= self._backoff.get(s.worker_id, (0, 0.0))[1]
             ]
@@ -194,6 +205,10 @@ class WorkerPool:
                 delay = min(interval * 2**refills, MAX_REFILL_BACKOFF)
                 self._backoff[worker_slot.worker_id] = (refills + 1, now + delay)
             return started
+
+    def waiting(self) -> set[WorkerId]:
+        """Return the workers waiting for their node to have room for them."""
+        return self._workers.waiting()
 
     def start_refilling(self) -> None:
         """Refill every `worker_reconcile_interval` seconds in a thread until halted."""
@@ -234,6 +249,31 @@ class WorkerPool:
                 self.refill(time.monotonic())
             except Exception:
                 logger.exception("Could not refill the worker pool")
+
+    def _remove_waiting(self, now: float) -> set[WorkerId]:
+        """Remove the workers waiting for room for `startup_timeout`; return them."""
+        waiting = self._workers.waiting()
+        self._waiting_since = {
+            worker: self._waiting_since.get(worker, now) for worker in waiting
+        }
+        timeout = self._config.startup_timeout
+        removed = {
+            worker
+            for worker, since in self._waiting_since.items()
+            if now - since >= timeout
+        }
+        if removed:
+            self._workers.terminate(removed)
+            self._starting -= removed
+            for worker in sorted(removed):
+                del self._waiting_since[worker]
+                logger.warning(
+                    "Removed %s, as it waited %ds for room on its node, which other "
+                    "Ray work holds",
+                    worker,
+                    timeout,
+                )
+        return removed
 
     def _clamp(self, num_workers: int) -> int:
         low, high = self._config.min_workers, self._config.max_workers
@@ -325,7 +365,22 @@ class WorkerPool:
         )
 
     def _free_slots(self, running: typing.Collection[WorkerId]) -> list[WorkerSlot]:
-        return [s for s in self._slots() if s.worker_id not in running]
+        """The slots without a worker that their node's free resources fit."""
+        room = {node.node_id: self._room(node) for node in self._workers.nodes()}
+        free = []
+        for worker_slot in self._slots():
+            node_id = worker_slot.node_id
+            if worker_slot.worker_id not in running and room.get(node_id, 0) >= 1:
+                room[node_id] -= 1
+                free.append(worker_slot)
+        return free
+
+    def _room(self, node: Node) -> float:
+        """Return how many more workers the free resources of `node` fit."""
+        return min(
+            _fits(node.free_cpus, self._config.worker.cpus_hint),
+            _fits(node.free_memory, self._config.worker.memory_hint),
+        )
 
 
 def _live_workers_of(

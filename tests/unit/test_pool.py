@@ -1,3 +1,4 @@
+import dataclasses
 import itertools
 import threading
 import time
@@ -31,27 +32,53 @@ def slot(node_id: str, index: int = 0) -> WorkerId:
 
 
 class InMemoryWorkers:
-    """Nodes and named worker actors, as Ray would hold them."""
+    """Nodes and named worker actors, as Ray would hold them.
 
-    def __init__(self, *nodes: Node) -> None:
+    A worker started on a node without room for its `cpus_hint` and `memory_hint` waits
+    for it, as Ray holds a pinned actor pending until its node has room.
+    """
+
+    def __init__(
+        self, *nodes: Node, cpus_hint: float = 1, memory_hint: float = 1
+    ) -> None:
         self.nodes_by_id = {node.node_id: node for node in nodes}
         self.workers: dict[WorkerId, str] = {}  # worker -> node ID
+        self.waiting_for_room: set[WorkerId] = set()
+        self.held_by_others: dict[
+            str, tuple[float, float]
+        ] = {}  # node -> (cpus, memory)
         self.listening: set[WorkerId] = set()
         self.exited: set[WorkerId] = set()  # past their restart limit
+        self.hint = (cpus_hint, memory_hint)
 
     def nodes(self) -> list[Node]:
-        return list(self.nodes_by_id.values())
+        nodes = []
+        for node_ in self.nodes_by_id.values():
+            free_cpus, free_memory = self._free(node_.node_id)
+            nodes.append(
+                dataclasses.replace(node_, free_cpus=free_cpus, free_memory=free_memory)
+            )
+        return nodes
 
     def running(self) -> set[WorkerId]:
         return set(self.workers)
 
+    def waiting(self) -> set[WorkerId]:
+        return self.waiting_for_room & set(self.workers)
+
     def start(self, slot: WorkerSlot) -> None:
         assert self.nodes_by_id[slot.node_id].alive
-        self.workers.setdefault(slot.worker_id, slot.node_id)
+        if slot.worker_id in self.workers:
+            return
+        has_room = self._has_room(slot.node_id)
+        self.workers[slot.worker_id] = slot.node_id
+        if not has_room:
+            self.waiting_for_room.add(slot.worker_id)
 
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
         for worker in workers:
             self.workers.pop(worker, None)
+            self.waiting_for_room.discard(worker)
 
     def ready(self, workers: typing.Collection[WorkerId]) -> set[WorkerId]:
         if exited := sorted(self.exited.intersection(workers)):
@@ -66,11 +93,42 @@ class InMemoryWorkers:
         del self.nodes_by_id[node_id]
         self.workers = {n: i for n, i in self.workers.items() if i != node_id}
 
+    def hold(self, node_id: str, cpus: float, memory: float = 0) -> None:
+        """Have other Ray work hold `cpus` and `memory` of the node, from now on."""
+        self.held_by_others[node_id] = (cpus, memory)
+        for worker in sorted(self.waiting()):
+            if self.workers[worker] == node_id and self._has_room(node_id):
+                self.waiting_for_room.discard(worker)
+
+    def _free(self, node_id: str) -> tuple[float, float]:
+        node = self.nodes_by_id[node_id]
+        others_cpus, others_memory = self.held_by_others.get(node_id, (0, 0))
+        placed = sum(
+            1
+            for worker, on in self.workers.items()
+            if on == node_id and worker not in self.waiting_for_room
+        )
+        return (
+            node.cpus - others_cpus - placed * self.hint[0],
+            node.memory - others_memory - placed * self.hint[1],
+        )
+
+    def _has_room(self, node_id: str) -> bool:
+        cpus, memory = self._free(node_id)
+        return cpus >= self.hint[0] and memory >= self.hint[1]
+
 
 def node(
     node_id: str, *, alive: bool = True, cpus: float = 4, memory: float = 8e9
 ) -> Node:
-    return Node(node_id, alive=alive, cpus=cpus, memory=memory)
+    return Node(
+        node_id,
+        alive=alive,
+        cpus=cpus,
+        memory=memory,
+        free_cpus=cpus,
+        free_memory=memory,
+    )
 
 
 def config(**kwargs: typing.Any) -> PolarsRayClusterConfig:
@@ -568,3 +626,124 @@ def test_a_stopped_pool_ignores_rescales() -> None:
 
     assert workers.running() == set()
     assert worker_pool.status().target == 0
+
+
+def test_ensure_skips_a_node_whose_cpus_other_ray_work_holds() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B), cpus_hint=2)
+    workers.hold(NODE_A, cpus=3)
+    worker = PolarsWorkerConfig(cpus_hint=2, memory_hint=1)
+
+    assert pool(workers, worker=worker).ensure(1) == {slot(NODE_B)}
+    assert workers.waiting() == set()
+
+
+def test_ensure_skips_a_node_whose_memory_other_ray_work_holds() -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    workers.hold(NODE_A, cpus=0, memory=8e9)
+
+    assert pool(workers).ensure(1) == {slot(NODE_B)}
+
+
+def test_ensure_stacks_no_more_than_the_free_cpus_fit() -> None:
+    workers = InMemoryWorkers(node(NODE_A, cpus=8), cpus_hint=2)
+    workers.hold(NODE_A, cpus=4)
+    worker = PolarsWorkerConfig(cpus_hint=2, memory_hint=1)
+    worker_pool = pool(workers, workers_per_node=4, worker=worker)
+
+    with pytest.raises(NoRoomForWorkers, match="room for 2"):
+        worker_pool.ensure(3)
+
+    assert worker_pool.ensure(2) == {slot(NODE_A, 0), slot(NODE_A, 1)}
+
+
+def test_ensure_counts_the_room_its_own_workers_hold_once() -> None:
+    workers = InMemoryWorkers(node(NODE_A, cpus=4), cpus_hint=2)
+    worker = PolarsWorkerConfig(cpus_hint=2, memory_hint=1)
+    worker_pool = pool(workers, workers_per_node=2, worker=worker)
+    worker_pool.ensure(1)
+
+    assert worker_pool.ensure(2) == {slot(NODE_A, 0), slot(NODE_A, 1)}
+    assert workers.waiting() == set()
+
+
+def test_rescale_up_starts_only_what_the_free_room_fits(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    workers.hold(NODE_B, cpus=4)
+    worker_pool = pool(workers)
+
+    worker_pool.rescale(2)
+
+    assert workers.running() == {slot(NODE_A)}
+    assert "Only room for 1 of the 2 missing workers" in caplog.text
+
+
+def waiting_on_a(**kwargs: typing.Any) -> tuple[InMemoryWorkers, WorkerPool]:
+    """Return a pool of one worker that waits for node A, full, with B free."""
+    workers = InMemoryWorkers(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, target=1, **kwargs)
+    workers.hold(NODE_A, cpus=4)  # after the pool saw A free, as other work raced it
+    workers.start(WorkerSlot(NODE_A, 0))
+    assert workers.waiting() == {slot(NODE_A)}
+    return workers, worker_pool
+
+
+def test_refill_leaves_a_worker_waiting_for_room_within_the_startup_timeout() -> None:
+    workers, worker_pool = waiting_on_a(startup_timeout=30)
+
+    assert worker_pool.refill(now=0) == []
+    assert worker_pool.refill(now=29) == []
+    assert workers.running() == {slot(NODE_A)}
+
+
+def test_refill_moves_a_worker_waiting_for_room_past_the_startup_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers, worker_pool = waiting_on_a(startup_timeout=30)
+    worker_pool.refill(now=0)
+
+    assert worker_pool.refill(now=30) == [WorkerSlot(NODE_B, 0)]
+    assert workers.running() == {slot(NODE_B)}
+    assert (
+        f"Removed {slot(NODE_A)}, as it waited 30s for room on its node" in caplog.text
+    )
+
+
+def test_refill_times_the_wait_from_when_it_first_sees_it() -> None:
+    workers, worker_pool = waiting_on_a(startup_timeout=30)
+
+    worker_pool.refill(now=100)
+
+    assert workers.running() == {slot(NODE_A)}
+
+
+def test_refill_restarts_the_wait_of_a_worker_that_got_room() -> None:
+    workers, worker_pool = waiting_on_a(startup_timeout=30)
+    worker_pool.refill(now=0)
+    workers.hold(NODE_A, cpus=0)
+    worker_pool.refill(now=10)
+
+    workers.hold(NODE_A, cpus=4)
+    assert worker_pool.refill(now=30) == []
+    assert workers.running() == {slot(NODE_A)}
+
+
+def test_waiting_names_the_workers_waiting_for_room() -> None:
+    _, worker_pool = waiting_on_a()
+
+    assert worker_pool.waiting() == {slot(NODE_A)}
+
+
+def test_not_ready_forgets_a_started_worker_removed_for_waiting_for_room() -> None:
+    workers = SlowListing(node(NODE_A), node(NODE_B))
+    worker_pool = pool(workers, startup_timeout=30)
+    worker_pool.ensure(1)
+    workers.workers[slot(NODE_A)] = NODE_A  # listed, but Ray holds it pending
+    workers.waiting_for_room.add(slot(NODE_A))
+    workers.hold(NODE_A, cpus=4)
+
+    worker_pool.refill(now=0)
+    worker_pool.refill(now=30)
+
+    assert worker_pool.not_ready() == set()

@@ -20,6 +20,12 @@ from polars_nanook_ray.identity import SCHEDULER
 logger = logging.getLogger(__name__)
 
 
+class _NotReady(RuntimeError):
+    def __init__(self, msg: str, not_ready: list[str]) -> None:
+        super().__init__(msg)
+        self.not_ready = not_ready
+
+
 class PolarsRayCluster:
     """Manage the lifecycles of the scheduler and worker actors.
 
@@ -134,7 +140,7 @@ class PolarsRayCluster:
             time.sleep(0.5)
 
         msg = f"Did not start within {timeout}s: {', '.join(not_ready)}"
-        raise RuntimeError(msg)
+        raise _NotReady(msg, not_ready)
 
     # this should probably never be called directly
     def _rescale_worker_pool_to(
@@ -159,7 +165,8 @@ class PolarsRayCluster:
 
         Has the scheduler top the worker pool up to `num_workers`, keeping any worker
         already running, so reconnecting never adds workers. Fails right away if the
-        nodes have no room for `num_workers`, removing the actors it started.
+        nodes have no room for `num_workers`, and after `startup_timeout` if workers
+        still wait for room on their node; either way, removes the actors it started.
         """
         created = self._find_actor(SCHEDULER.actor_name) is None
         self._scheduler_actor = self._find_or_create_actor(
@@ -176,7 +183,26 @@ class PolarsRayCluster:
             # Ray raises a subclass of the actor's error, with the actor's traceback
             raise exc.cause from None  # type: ignore[attr-defined]
 
-        self._wait_until_ready(self._scheduler_actor, "scheduler")
+        try:
+            self._wait_until_ready(self._scheduler_actor, "scheduler")
+        except _NotReady as exc:
+            if str(SCHEDULER) in exc.not_ready:
+                raise
+            waiting = ray.get(
+                self._scheduler_actor.waiting_workers.remote(),
+                timeout=self.config.actor_response_timeout,
+            )
+            if not waiting:
+                raise
+            if created:
+                self.stop()
+            worker = self.config.worker
+            msg = (
+                f"{exc}; {', '.join(waiting)} waiting for room on their node, which "
+                f"other Ray work holds: {worker.cpus_hint} CPUs and "
+                f"{worker.memory_hint} bytes of memory each"
+            )
+            raise RuntimeError(msg) from None
 
         endpoints = self._endpoints()
         msg = f"Engine cluster ready: scheduler at {endpoints.client}, "

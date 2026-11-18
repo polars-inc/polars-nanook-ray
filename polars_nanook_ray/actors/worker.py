@@ -2,6 +2,7 @@ import logging
 import typing
 
 import ray
+from ray._private.state import actors, available_resources_per_node
 from ray.exceptions import ActorDiedError, ActorUnavailableError
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
@@ -113,18 +114,24 @@ class RayWorkers:
         self._started: dict[WorkerId, ActorHandle] = {}
 
     def nodes(self) -> list[Node]:
+        free = available_resources_per_node()
         return [
             Node(
                 node["NodeID"],
                 alive=node["Alive"],
                 cpus=node["Resources"].get("CPU", 0),
                 memory=node["Resources"].get("memory", 0),
+                free_cpus=free.get(node["NodeID"], {}).get("CPU", 0),
+                free_memory=free.get(node["NodeID"], {}).get("memory", 0),
             )
             for node in ray.nodes()
         ]
 
     def running(self) -> set[WorkerId]:
         return list_workers(self._config.cluster_id)
+
+    def waiting(self) -> set[WorkerId]:
+        return set(_waiting_for_room(self._handles(self.running())))
 
     def start(self, slot: WorkerSlot) -> None:
         """Start the worker of `slot` pinned to its node, unless it already runs."""
@@ -145,16 +152,19 @@ class RayWorkers:
         logger.info("Requested worker %s", slot.worker_id)
 
     def terminate(self, workers: typing.Collection[WorkerId]) -> None:
-        actors = resolve_actor_handles(workers, self._config.cluster_id)
-        terminate_actors(list(actors.values()), self._config.actor_response_timeout)
+        handles = self._handles(workers)
+        waiting = _waiting_for_room(handles)
+        for handle in waiting.values():  # no process to stop, nor answers to `stop`
+            ray.kill(handle)
+        terminate_actors(
+            [h for w, h in handles.items() if w not in waiting],
+            self._config.actor_response_timeout,
+        )
         for worker in workers:
             self._started.pop(worker, None)
 
     def ready(self, workers: typing.Collection[WorkerId]) -> set[WorkerId]:
-        handles = {w: h for w in workers if (h := self._started.get(w)) is not None}
-        handles |= resolve_actor_handles(
-            set(workers) - set(handles), self._config.cluster_id
-        )
+        handles = self._handles(workers)
         if not handles:
             return set()
 
@@ -181,3 +191,26 @@ class RayWorkers:
                 )
                 raise WorkerExited(msg) from exc
         return ready
+
+    def _handles(
+        self, workers: typing.Collection[WorkerId]
+    ) -> dict[WorkerId, "ActorHandle"]:
+        handles = {w: h for w in workers if (h := self._started.get(w)) is not None}
+        return handles | resolve_actor_handles(
+            set(workers) - set(handles), self._config.cluster_id
+        )
+
+
+def _waiting_for_room(
+    handles: dict[WorkerId, "ActorHandle"],
+) -> dict[WorkerId, "ActorHandle"]:
+    """Return those of `handles` whose actor Ray holds pending for room on its node.
+
+    Ray gives a pending actor its process once its node has room for it.
+    """
+    pending = actors(actor_state_name="PENDING_CREATION")
+    return {
+        worker: handle
+        for worker, handle in handles.items()
+        if (info := pending.get(handle._actor_id.hex())) is not None and not info["Pid"]
+    }

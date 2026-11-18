@@ -145,9 +145,17 @@ To fix them instead, for firewall rules, set `task_port` and `shuffle_port` on
 
 Workers are pinned to Ray nodes, at most `workers_per_node` (default `1`) per node,
 and no more than a node's CPUs and memory fit at `cpus_hint` / `memory_hint` each.
-They are spread across nodes before a second worker lands on any of them; nodes
-without CPUs, like a head started with `--num-cpus=0`, get none. Nodes are listed with `ray.nodes()`, so
-neither placement nor `stop()` needs the Ray dashboard.
+A new worker only goes to a node whose free CPUs and memory fit it: those that other
+Ray work (another cluster, Ray Data, your own actors) holds do not count. They are
+spread across nodes before a second worker lands on any of them; nodes without CPUs,
+like a head started with `--num-cpus=0`, get none. Nodes and their free resources are
+read from the Ray GCS, so neither placement nor `stop()` needs the Ray dashboard.
+
+Other Ray work can still take a node's room between placing a worker and Ray starting
+it. Such a worker waits for room on its node; once it has waited `startup_timeout`
+seconds, the pool removes it and starts one on a node with room. If workers are still
+waiting when `start()` gives up, its error names them, and it stops the cluster it
+created.
 
 Each worker is named after its node and its index on it, e.g. `worker-1a2b3c4d5e6f-0`
 for the first worker on the node whose ID starts with `1a2b3c4d5e6f`. Starting a

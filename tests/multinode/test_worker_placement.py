@@ -4,15 +4,19 @@ Several raylets run on this one machine, without the dashboard. The binaries are
 replaced by a stub that sleeps, so no license is needed: only the actors are under test.
 """
 
+import contextlib
 import socket
 import time
 import typing
 
 import pytest
 import ray
+from ray._private.state import available_resources_per_node
 from ray.actor import ActorHandle
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from polars_nanook_ray.actors import WorkerExited, WorkerSlot
+from polars_nanook_ray.actors.worker import RayWorkers
 from polars_nanook_ray.cluster import PolarsRayCluster
 from polars_nanook_ray.config import (
     PolarsObservatoryConfig,
@@ -213,3 +217,138 @@ def test_start_fails_fast_when_the_scheduler_exits(
     assert time.monotonic() - started < 15
     PolarsRayCluster(config).stop()
     _assert_stopped(config)
+
+
+@ray.remote
+class _Hog:
+    """Other Ray work, holding CPUs of a node."""
+
+    def ping(self) -> None:
+        pass
+
+
+@contextlib.contextmanager
+def cpus_held(node: str, cpus: float) -> typing.Iterator[None]:
+    hog = _Hog.options(  # type: ignore[attr-defined]
+        num_cpus=cpus,
+        scheduling_strategy=NodeAffinitySchedulingStrategy(node, soft=False),
+    ).remote()
+    ray.get(hog.ping.remote())
+    try:
+        yield
+    finally:
+        ray.kill(hog)
+        _wait_for_free_cpus(node, cpus)
+
+
+def _wait_for_free_cpus(node: str, cpus: float) -> None:
+    deadline = time.monotonic() + 10
+    while (
+        available_resources_per_node().get(node, {}).get("CPU", 0) < cpus
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.1)
+
+
+@pytest.mark.parametrize(
+    "config", [{"worker": PolarsWorkerConfig(cpus_hint=2)}], indirect=True
+)
+def test_workers_skip_a_node_whose_cpus_other_ray_work_holds(
+    cpu_node_ids: set[str],
+    config: PolarsRayClusterConfig,
+    scheduler: ActorHandle,
+) -> None:
+    full, other = sorted(cpu_node_ids)
+    with cpus_held(full, 1):
+        ray.get(scheduler.rescale_worker_pool_to.remote(1))
+
+        assert set(wait_for_workers(config.cluster_id, 1)) == {
+            WorkerSlot(other, 0).worker_id
+        }
+
+
+@pytest.mark.parametrize(
+    "config", [{"worker": PolarsWorkerConfig(cpus_hint=2)}], indirect=True
+)
+def test_a_worker_pinned_to_a_full_node_is_waiting(
+    cpu_node_ids: set[str],
+    config: PolarsRayClusterConfig,
+) -> None:
+    full = min(cpu_node_ids)
+    workers = RayWorkers(config, scheduler_host="127.0.0.1")
+    with cpus_held(full, 1):
+        workers.start(WorkerSlot(full, 0))
+        try:
+            time.sleep(2)
+
+            assert workers.waiting() == {WorkerSlot(full, 0).worker_id}
+        finally:
+            workers.terminate({WorkerSlot(full, 0).worker_id})
+
+
+def test_start_names_the_workers_waiting_for_room_and_stops(
+    cpu_node_ids: set[str],
+) -> None:
+    full = min(cpu_node_ids)
+    config = make_config(
+        binary_path=str(LISTENING_ENGINE),
+        num_workers=1,
+        startup_timeout=5,
+        worker=PolarsWorkerConfig(cpus_hint=2, memory_hint=1),
+    )
+    # placed as a race with other Ray work would: on a node that has no room left
+    workers = RayWorkers(config, scheduler_host="127.0.0.1")
+    with cpus_held(full, 1):
+        workers.start(WorkerSlot(full, 0))
+        try:
+            started = time.monotonic()
+            with pytest.raises(
+                RuntimeError,
+                match=rf"{WorkerSlot(full, 0).worker_id} .*waiting for room",
+            ):
+                PolarsRayCluster(config).start()
+
+            # stopping skips asking the waiting worker, without a process, to stop
+            assert time.monotonic() - started < config.startup_timeout + 15
+
+            with pytest.raises(ValueError, match=SCHEDULER.actor_name):
+                ray.get_actor(SCHEDULER.actor_name, namespace=config.cluster_id)
+        finally:
+            workers.terminate({WorkerSlot(full, 0).worker_id})
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {
+            "worker": PolarsWorkerConfig(cpus_hint=2, memory_hint=1),
+            "num_workers": 1,
+            "worker_reconcile_interval": 0.5,
+            "startup_timeout": 2,
+        }
+    ],
+    indirect=True,
+)
+def test_refill_moves_a_worker_waiting_for_room_to_a_node_with_room(
+    cpu_node_ids: set[str],
+    config: PolarsRayClusterConfig,
+) -> None:
+    full, other = sorted(cpu_node_ids)
+    workers = RayWorkers(config, scheduler_host="127.0.0.1")
+    with cpus_held(full, 1):
+        workers.start(WorkerSlot(full, 0))
+        try:
+            scheduler = run_scheduler(config)
+            next(scheduler)
+
+            deadline = time.monotonic() + 30
+            while (
+                list_workers(config.cluster_id) != {WorkerSlot(other, 0).worker_id}
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.5)
+
+            assert list_workers(config.cluster_id) == {WorkerSlot(other, 0).worker_id}
+            next(scheduler, None)
+        finally:
+            workers.terminate({WorkerSlot(full, 0).worker_id})
