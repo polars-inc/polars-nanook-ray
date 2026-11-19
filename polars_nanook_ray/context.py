@@ -23,7 +23,13 @@ if typing.TYPE_CHECKING:
     from typing import Self
 
     from polars_nanook_ray._spec import ClusterSpec, StorageLike
-    from polars_nanook_ray.options import Autoscale, Ports, ServiceAccount, Tls
+    from polars_nanook_ray.options import (
+        Autoscale,
+        OutOfCore,
+        Ports,
+        ServiceAccount,
+        Tls,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +73,9 @@ class RayComputeContext(ClusterContext):
         The CPUs of each worker: what it requests from Ray, and reserves in the engine.
         Ray spreads the workers over the nodes with these CPUs and `memory` free.
     memory
-        The memory of each worker, in GiB, as requested from Ray.
+        The memory of each worker, in GiB: what it requests from Ray, and sizes its
+        memory use to. Its tasks fail past about 95% of it; 0 lets each worker size
+        itself from the memory of its whole node.
     autoscale
         Let the engine scale the workers to the queries, within the bounds of an
         `Autoscale` (or the mapping of one); `None` keeps `workers` fixed.
@@ -75,8 +83,11 @@ class RayComputeContext(ClusterContext):
         Where workers exchange shuffle data: a `Storage`, URL or absolute path.
     anonymous_results
         Where the results of anonymous queries go.
-    spill_dir
-        The local directory Polars spills to on each worker node.
+    temp_dir
+        The local directory for the temporary files of each worker, such as downloads.
+    out_of_core
+        How workers spill to disk when low on memory, an `OutOfCore` (or the mapping of
+        one); its budgets are fractions of `memory`.
     ports
         The ports to listen on; those unset are picked free on each node. Ray may
         place two workers on one node, so a fixed `task` or `shuffle` port makes the
@@ -136,9 +147,10 @@ class RayComputeContext(ClusterContext):
         cpus: float = 1,
         memory: float = 2,
         autoscale: "Autoscale | typing.Mapping[str, int | None] | None" = None,
-        shuffle_data: "StorageLike" = "/tmp/polars/shuffle-data",
-        anonymous_results: "StorageLike" = "/tmp/polars/anonymous-results",
-        spill_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
+        shuffle_data: "StorageLike" = "/var/tmp/polars/shuffle-data",
+        anonymous_results: "StorageLike" = "/var/tmp/polars/anonymous-results",
+        temp_dir: str | os.PathLike[str] = "/var/tmp/polars/temporary-data",
+        out_of_core: "OutOfCore | typing.Mapping[str, typing.Any] | None" = None,
         ports: "Ports | typing.Mapping[str, int | None] | None" = None,
         tls: "Tls | typing.Mapping[str, typing.Any] | None" = None,
         worker_max_restarts: int = 3,

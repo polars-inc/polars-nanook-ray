@@ -10,11 +10,19 @@ from polars_nanook_ray._engine import (
     render_worker,
     scheduler_env,
     scheduler_ports,
+    worker_dirs,
     worker_env,
     worker_ports,
 )
 from polars_nanook_ray._spec import build_spec
-from polars_nanook_ray.options import Autoscale, Jwks, ServiceAccount, Storage, Tls
+from polars_nanook_ray.options import (
+    Autoscale,
+    Jwks,
+    OutOfCore,
+    ServiceAccount,
+    Storage,
+    Tls,
+)
 
 if typing.TYPE_CHECKING:
     from polars_nanook_ray._spec import ClusterSpec
@@ -89,7 +97,7 @@ def test_service_account_validates_on_the_scheduler_only(
             "workspace_id": "ws",
             "client_id": "id",
             "client_secret": "secret",
-            "cert_dir": "/tmp/polars/license",
+            "cert_dir": "/var/tmp/polars/license",
         }
     }
     assert "license" not in _worker(spec)
@@ -186,7 +194,11 @@ def test_invalid_storage_rejected(storage: typing.Any, match: str) -> None:
         ({"name": "-cluster"}, "name"),
         ({"workers": -1}, "workers"),
         ({"reconcile_interval": -1}, "reconcile_interval"),
-        ({"spill_dir": "spill"}, "spill_dir"),
+        ({"temp_dir": "tmp"}, "temp_dir"),
+        ({"out_of_core": {"spill_dir": "spill"}}, "spill_dir"),
+        ({"out_of_core": {"memory_budget_fraction": 1.5}}, "memory_budget_fraction"),
+        ({"out_of_core": {"disk_budget_mb": 0}}, "disk_budget_mb"),
+        ({"out_of_core": {"spill_to": "/x"}}, "spill_to"),
         ({"log_level": "warn"}, "log_level"),
     ],
 )
@@ -362,7 +374,7 @@ def test_engine_environment() -> None:
     spec = build_spec(
         license="/license.json",
         log_level="trace",
-        spill_dir="/scratch",
+        temp_dir="/scratch",
         env_vars={"RUST_BACKTRACE": "1", "FOO": "bar"},
     )
 
@@ -373,7 +385,82 @@ def test_engine_environment() -> None:
         "FOO": "bar",
     }
     assert scheduler_env(spec) == expected
-    assert worker_env(spec) == expected | {"POLARS_TEMP_DIR": "/scratch"}
+    assert worker_env(spec) == expected | {
+        "POLARS_TEMP_DIR": "/scratch",
+        "POLARS_OOC_SPILL_DIR": "/var/tmp/polars/spill",
+        "POLARS_OVERRIDE_TOTAL_MEMORY_MB": "2147",
+        "POLARS_OOMKILL_THRESHOLD_MB": "2048",
+    }
+
+
+def _ooc_env(spec: "ClusterSpec") -> dict[str, str]:
+    return {
+        k: v
+        for k, v in worker_env(spec).items()
+        if k.startswith(("POLARS_OOC_", "POLARS_OOMKILL_", "POLARS_OVERRIDE_"))
+    }
+
+
+def test_out_of_core_budgets_follow_worker_memory_by_default() -> None:
+    spec = build_spec(license="/license.json", memory=8)
+
+    assert _ooc_env(spec) == {
+        "POLARS_OOC_SPILL_DIR": "/var/tmp/polars/spill",
+        "POLARS_OVERRIDE_TOTAL_MEMORY_MB": "8589",
+        "POLARS_OOMKILL_THRESHOLD_MB": "8192",
+    }
+
+
+def test_zero_memory_leaves_out_of_core_budgets_to_the_node() -> None:
+    spec = build_spec(license="/license.json", memory=0)
+
+    assert _ooc_env(spec) == {"POLARS_OOC_SPILL_DIR": "/var/tmp/polars/spill"}
+
+
+@pytest.mark.parametrize(
+    "out_of_core",
+    [
+        OutOfCore(
+            spill_dir="~/spill",
+            memory_budget_fraction=0.7,
+            memory_budget_mb=1500,
+            disk_budget_mb=200_000,
+            oom_kill_threshold_mb=1900,
+        ),
+        {
+            "spill_dir": "~/spill",
+            "memory_budget_fraction": 0.7,
+            "memory_budget_mb": 1500,
+            "disk_budget_mb": 200_000,
+            "oom_kill_threshold_mb": 1900,
+        },
+    ],
+)
+def test_out_of_core_settings_reach_workers_only(out_of_core: typing.Any) -> None:
+    spec = build_spec(license="/license.json", out_of_core=out_of_core)
+
+    spill_dir = str(pathlib.Path("~/spill").expanduser())
+    assert _ooc_env(spec) == {
+        "POLARS_OOC_SPILL_DIR": spill_dir,
+        "POLARS_OVERRIDE_TOTAL_MEMORY_MB": "2147",
+        "POLARS_OOMKILL_THRESHOLD_MB": "1900",
+        "POLARS_OOC_MEMORY_BUDGET_FRACTION": "0.7",
+        "POLARS_OOC_MEMORY_BUDGET_MB": "1500",
+        "POLARS_OOC_DISK_BUDGET_MB": "200000",
+    }
+    assert spill_dir in worker_dirs(spec)
+    assert not any(k.startswith("POLARS_OO") for k in scheduler_env(spec))
+
+
+def test_env_vars_override_out_of_core_settings() -> None:
+    spec = build_spec(
+        license="/license.json",
+        env_vars={"POLARS_OOMKILL_THRESHOLD_MB": "100", "POLARS_TEMP_DIR": "/t"},
+    )
+
+    env = worker_env(spec)
+    assert env["POLARS_OOMKILL_THRESHOLD_MB"] == "100"
+    assert env["POLARS_TEMP_DIR"] == "/t"
 
 
 def test_the_eula_is_accepted_for_every_engine_by_default() -> None:
@@ -431,7 +518,7 @@ def test_overrides_merge_replace_and_delete() -> None:
     worker = _worker(spec)
     assert worker["worker"]["heartbeat_period"] == "1s"
     assert worker["worker"]["shuffle_location"] == {
-        "local": {"path": "/tmp/polars/shuffle-data"}
+        "local": {"path": "/var/tmp/polars/shuffle-data"}
     }
     assert "cpu_reserved" not in worker
 

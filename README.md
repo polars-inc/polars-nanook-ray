@@ -68,7 +68,7 @@ actors. The package passes the namespace to every Ray call itself, so
 several on one Ray cluster.
 
 The package creates the local directories the engines need, such as
-`/tmp/polars/...`, on each node before starting them.
+`/var/tmp/polars/...`, on each node before starting them.
 
 `ctx.client_addr` is the URL queries are sent to, for example
 `http://10.0.0.5:5051`. `ctx.dashboard_addr` is the URL of the observatory
@@ -139,10 +139,13 @@ shuffle_data = Storage(
 For a filesystem mounted at the same path on every node, such as NFS, use
 `Storage("/mnt/nfs/shuffle", shared=True)`.
 
-`shuffle_data` and `anonymous_results` default to `/tmp/polars/shuffle-data` and
-`/tmp/polars/anonymous-results`. `spill_dir`
-(default `/tmp/polars/temporary-data`) is where Polars spills to disk on each
-worker.
+`shuffle_data` and `anonymous_results` default to
+`/var/tmp/polars/shuffle-data` and `/var/tmp/polars/anonymous-results`.
+`temp_dir` (default `/var/tmp/polars/temporary-data`) is where each worker keeps
+its temporary files, such as downloads; spill files go to the `spill_dir` of
+[`out_of_core`](#out-of-core). Every default directory is under
+`/var/tmp/polars`, which stays on disk, where `/tmp` is a `tmpfs` held in memory
+on many Linux distributions.
 
 ## Ports and firewalls
 
@@ -322,8 +325,13 @@ RayComputeContext(
 
 `cpus` (default `1`) and `memory` (default `2`, in GiB) are Ray's `num_cpus` and
 `memory` actor options, used by Ray for bin-packing. `cpus` is also the engine's
-CPU reservation, a hint for task placement reported to the observatory. Neither is
-enforced at the OS level.
+CPU reservation, a hint for task placement reported to the observatory. `memory`
+is also what each worker sizes itself to: it spills to disk past 80% of it (see
+[out-of-core](#out-of-core)), and fails a task past about 95% of it, the worker
+staying up. Neither is enforced at the OS level, so a worker that needs more
+memory needs a larger `memory`. `memory=0` reserves nothing from Ray, and lets
+each worker size itself from the memory of its whole node, which only suits one
+worker per node.
 
 `worker_overrides={"memory_limit": <bytes>}` makes each worker engine also cap
 itself through cgroups, but only if a _delegated cgroup subtree is made
@@ -334,8 +342,41 @@ message:
 > Ensure cgroup is mounted and subgroups are delegated, or disable the memory
 > limit in the configuration file.
 
-`binary_path` runs a specific engine binary instead of the one from
-`polars-nanook-compute`.
+Keep `memory` in line with such a limit: the worker sizes itself from `memory`,
+not from its cgroup.
+
+### Out-of-core
+
+When memory runs low, workers spill data to disk instead of running out of
+memory. `out_of_core` takes an `OutOfCore`, or the mapping of one:
+
+```py
+from polars_nanook_ray import OutOfCore, RayComputeContext
+
+RayComputeContext(
+    license="/path/to/license.json",
+    memory=16,
+    out_of_core=OutOfCore(
+        spill_dir="/mnt/nvme/polars-spill",  # default /var/tmp/polars/spill
+        memory_budget_fraction=0.7,  # spill past 70% of `memory`, default 0.8
+        disk_budget_mb=200_000,  # fail a query spilling more, default 64000
+    ),
+)
+```
+
+| Setting                  | Default                 | Effect                                                                   |
+| ------------------------ | ----------------------- | ------------------------------------------------------------------------ |
+| `spill_dir`              | `/var/tmp/polars/spill` | Local directory for the spill files of each node's workers               |
+| `memory_budget_fraction` | `0.8`                   | Spill past this fraction of `memory`                                     |
+| `memory_budget_mb`       | none                    | Spill past this many MB (10^6 bytes); the lower of both budgets applies  |
+| `disk_budget_mb`         | `64000`                 | Fail a query whose spill files on a worker exceed this many MB           |
+| `oom_kill_threshold_mb`  | about 95% of `memory`   | Fail a task past this many MB, rather than the kernel killing the worker |
+
+Keep `spill_dir` on a fast local disk, and off `tmpfs`, such as `/tmp` on many
+Linux distributions, which holds files in memory. Every worker on a node spills
+to the same disk, each up to `disk_budget_mb`, so size the disk for both. The
+engine reads these as `POLARS_OOC_*` and `POLARS_OOMKILL_THRESHOLD_MB`
+environment variables, which `env_vars` overrides.
 
 ## Engine overrides and YAML
 
@@ -362,8 +403,8 @@ These settings have no keyword and are set this way:
 | Lineage events to an endpoint   | `{"lineage": {"transport": {"http": {"endpoint": "https://..."}}}}` in both overrides              |
 | Cap worker memory               | `worker_overrides={"memory_limit": <bytes>}`, see [resource limits](#resource-requests-and-limits) |
 
-`license`, the storage keywords, `ports`, `autoscale` and `tls` also accept plain
-mappings, so a whole cluster can come from a YAML file:
+`license`, the storage keywords, `ports`, `autoscale`, `tls` and `out_of_core` also
+accept plain mappings, so a whole cluster can come from a YAML file:
 
 ```py
 import yaml
@@ -379,6 +420,8 @@ license: /etc/polars/license.json
 workers: 8
 cpus: 15
 memory: 56
+out_of_core:
+  spill_dir: /mnt/nvme/polars-spill
 ports:
   task: 5052
   shuffle: 5053
@@ -387,3 +430,6 @@ shuffle_data:
   options:
     aws_region: eu-west-1
 ```
+
+`binary_path` runs a specific engine binary instead of the one from
+`polars-nanook-compute`.
