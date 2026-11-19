@@ -63,7 +63,8 @@ def worker_dirs(spec: "ClusterSpec") -> list[str]:
     """Return the local directories a worker's engine needs on its node."""
     return [
         *_local_storage(spec.shuffle_data, spec.anonymous_results),
-        spec.spill_dir,
+        spec.temp_dir,
+        spec.out_of_core.spill_dir,
     ]
 
 
@@ -87,7 +88,25 @@ def scheduler_env(spec: "ClusterSpec") -> dict[str, str]:
 
 def worker_env(spec: "ClusterSpec") -> dict[str, str]:
     """Return the environment of a worker's engine process."""
-    return scheduler_env(spec) | {"POLARS_TEMP_DIR": spec.spill_dir}
+    ooc = spec.out_of_core
+    env = {
+        "POLARS_TEMP_DIR": spec.temp_dir,
+        "POLARS_OOC_SPILL_DIR": ooc.spill_dir,
+    }
+    # Unconfined by its own cgroup, an engine otherwise sizes itself from the memory of
+    # its whole node, as would every other worker placed on it.
+    if total_mb := spec.memory_bytes // 10**6:
+        env["POLARS_OVERRIDE_TOTAL_MEMORY_MB"] = str(total_mb)
+    # The engine reads MB as 10^6 bytes, so the memory counted in MiB is ~95% of it.
+    if threshold_mb := ooc.oom_kill_threshold_mb or spec.memory_bytes // 2**20:
+        env["POLARS_OOMKILL_THRESHOLD_MB"] = str(threshold_mb)
+    if ooc.memory_budget_fraction is not None:
+        env["POLARS_OOC_MEMORY_BUDGET_FRACTION"] = str(ooc.memory_budget_fraction)
+    if ooc.memory_budget_mb is not None:
+        env["POLARS_OOC_MEMORY_BUDGET_MB"] = str(ooc.memory_budget_mb)
+    if ooc.disk_budget_mb is not None:
+        env["POLARS_OOC_DISK_BUDGET_MB"] = str(ooc.disk_budget_mb)
+    return scheduler_env(spec) | env | spec.env_vars
 
 
 def render_scheduler(

@@ -7,7 +7,15 @@ import urllib.parse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from polars_nanook_ray.options import Autoscale, Ports, ServiceAccount, Storage, Tls
+from polars_nanook_ray.options import (
+    Autoscale,
+    OutOfCore,
+    Ports,
+    ServiceAccount,
+    Storage,
+    Tls,
+    absolute_path,
+)
 
 # advertised by every Ray head node, see `ray._private.ray_constants`
 HEAD_NODE_RESOURCE = "node:__internal_head__"
@@ -73,7 +81,8 @@ class ClusterSpec(BaseModel):
     autoscale: Autoscale | None = None
     shuffle_data: Storage = Storage("/tmp/polars/shuffle-data")
     anonymous_results: Storage = Storage("/tmp/polars/anonymous-results")
-    spill_dir: str = "/tmp/polars/temporary-data"
+    temp_dir: str = "/tmp/polars/temporary-data"
+    out_of_core: OutOfCore = OutOfCore()
     ports: Ports = Ports()
     tls: Tls | None = None
     worker_max_restarts: int = Field(default=3, ge=-1)
@@ -103,16 +112,15 @@ class ClusterSpec(BaseModel):
     def _storage(cls, value: typing.Any) -> typing.Any:
         return _parse_storage(value)
 
-    @field_validator("spill_dir", mode="before")
+    @field_validator("temp_dir", mode="before")
     @classmethod
-    def _spill_dir(cls, value: typing.Any) -> typing.Any:
-        if isinstance(value, str | os.PathLike):
-            path = pathlib.Path(value).expanduser()
-            if not path.is_absolute():
-                msg = f"must be an absolute path, got {os.fspath(value)!r}"
-                raise ValueError(msg)
-            return str(path)
-        return value
+    def _temp_dir(cls, value: typing.Any) -> typing.Any:
+        return absolute_path(value)
+
+    @field_validator("out_of_core", mode="before")
+    @classmethod
+    def _out_of_core(cls, value: typing.Any) -> typing.Any:
+        return OutOfCore() if value is None else value
 
     @field_validator("binary_path", mode="before")
     @classmethod
@@ -150,7 +158,8 @@ def build_spec(
     autoscale: Autoscale | typing.Mapping[str, int | None] | None = None,
     shuffle_data: StorageLike = "/tmp/polars/shuffle-data",
     anonymous_results: StorageLike = "/tmp/polars/anonymous-results",
-    spill_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
+    temp_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
+    out_of_core: OutOfCore | typing.Mapping[str, typing.Any] | None = None,
     ports: Ports | typing.Mapping[str, int | None] | None = None,
     tls: Tls | typing.Mapping[str, typing.Any] | None = None,
     worker_max_restarts: int = 3,

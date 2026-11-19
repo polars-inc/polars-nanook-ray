@@ -1,6 +1,7 @@
 """Settings of a cluster that group naturally, given to `RayComputeContext`."""
 
 import os
+import pathlib
 import typing
 import urllib.parse
 
@@ -12,6 +13,21 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+
+def absolute_path(value: typing.Any) -> typing.Any:
+    """Return a path given as `str` or `os.PathLike` as a `str`, `~` expanded.
+
+    Raises `ValueError` if it is relative; returns other values as given, for pydantic
+    to reject.
+    """
+    if isinstance(value, str | os.PathLike):
+        path = pathlib.Path(value).expanduser()
+        if not path.is_absolute():
+            msg = f"must be an absolute path, got {os.fspath(value)!r}"
+            raise ValueError(msg)
+        return str(path)
+    return value
 
 
 class ServiceAccount(BaseModel):
@@ -261,3 +277,62 @@ class Autoscale(BaseModel):
             msg = f"`min_workers` ({self.min_workers}) exceeds `max_workers` ({self.max_workers})"
             raise ValueError(msg)
         return self
+
+
+class OutOfCore(BaseModel):
+    """Spill to disk when a worker runs low on memory, instead of running out of it.
+
+    The fractions are of each worker's `memory`, with no budgets from it when `memory`
+    is 0: each worker then sizes them from the memory of its whole node.
+
+    Parameters
+    ----------
+    spill_dir
+        The local directory workers spill to on each node, created if missing; keep it
+        off tmpfs, which holds spill files in memory.
+    memory_budget_fraction
+        Spill once a worker uses this fraction of its `memory`; the engine default is
+        0.8.
+    memory_budget_mb
+        Spill once a worker uses this many MB (10^6 bytes); with both budgets, the
+        lower one applies.
+    disk_budget_mb
+        Fail a query once its spill files on a worker exceed this many MB; the engine
+        default is 64000. Every worker of a node spills to the same disk.
+    oom_kill_threshold_mb
+        Fail a task once its worker uses this many MB, rather than the kernel killing
+        the worker; by default about 95% of `memory`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    spill_dir: str = "/var/tmp/polars/spill"
+    memory_budget_fraction: float | None = Field(default=None, ge=0, le=1)
+    memory_budget_mb: int | None = Field(default=None, ge=1)
+    disk_budget_mb: int | None = Field(default=None, ge=1)
+    oom_kill_threshold_mb: int | None = Field(default=None, ge=1)
+
+    def __init__(
+        self,
+        *,
+        spill_dir: str | os.PathLike[str] = "/var/tmp/polars/spill",
+        memory_budget_fraction: float | None = None,
+        memory_budget_mb: int | None = None,
+        disk_budget_mb: int | None = None,
+        oom_kill_threshold_mb: int | None = None,
+        **data: typing.Any,
+    ) -> None:
+        # pydantic validates mappings through `__init__` too, unknown keys in `data`
+        super().__init__(
+            spill_dir=spill_dir,
+            memory_budget_fraction=memory_budget_fraction,
+            memory_budget_mb=memory_budget_mb,
+            disk_budget_mb=disk_budget_mb,
+            oom_kill_threshold_mb=oom_kill_threshold_mb,
+            **data,
+        )
+
+    @field_validator("spill_dir", mode="before")
+    @classmethod
+    def _spill_dir(cls, value: typing.Any) -> typing.Any:
+        return absolute_path(value)
