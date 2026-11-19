@@ -20,7 +20,7 @@ if typing.TYPE_CHECKING:
 # the scheduler actor serves scaling requests here, and its engine calls it
 SCALER_HOST = "127.0.0.1"
 
-OBSERVATORY_DATABASE = "/tmp/polars/observatory/data.db"
+OBSERVATORY_DATABASE = "/var/tmp/polars/observatory/data.db"
 _OBSERVATORY_MAX_METRICS_BYTES = 100 * 1024**2
 # the engine's own default, where workers send telemetry if the scheduler has none
 _DEFAULT_TELEMETRY_PORT = 5049

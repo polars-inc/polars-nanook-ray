@@ -79,9 +79,9 @@ class ClusterSpec(BaseModel):
     cpus: float = Field(default=1, ge=0)
     memory: float = Field(default=2, ge=0)
     autoscale: Autoscale | None = None
-    shuffle_data: Storage = Storage("/tmp/polars/shuffle-data")
-    anonymous_results: Storage = Storage("/tmp/polars/anonymous-results")
-    temp_dir: str = "/tmp/polars/temporary-data"
+    shuffle_data: Storage = Storage("/var/tmp/polars/shuffle-data")
+    anonymous_results: Storage = Storage("/var/tmp/polars/anonymous-results")
+    temp_dir: str = "/var/tmp/polars/temporary-data"
     out_of_core: OutOfCore = OutOfCore()
     ports: Ports = Ports()
     tls: Tls | None = None
@@ -156,9 +156,9 @@ def build_spec(
     cpus: float = 1,
     memory: float = 2,
     autoscale: Autoscale | typing.Mapping[str, int | None] | None = None,
-    shuffle_data: StorageLike = "/tmp/polars/shuffle-data",
-    anonymous_results: StorageLike = "/tmp/polars/anonymous-results",
-    temp_dir: str | os.PathLike[str] = "/tmp/polars/temporary-data",
+    shuffle_data: StorageLike = "/var/tmp/polars/shuffle-data",
+    anonymous_results: StorageLike = "/var/tmp/polars/anonymous-results",
+    temp_dir: str | os.PathLike[str] = "/var/tmp/polars/temporary-data",
     out_of_core: OutOfCore | typing.Mapping[str, typing.Any] | None = None,
     ports: Ports | typing.Mapping[str, int | None] | None = None,
     tls: Tls | typing.Mapping[str, typing.Any] | None = None,

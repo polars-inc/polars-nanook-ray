@@ -97,7 +97,7 @@ def test_service_account_validates_on_the_scheduler_only(
             "workspace_id": "ws",
             "client_id": "id",
             "client_secret": "secret",
-            "cert_dir": "/tmp/polars/license",
+            "cert_dir": "/var/tmp/polars/license",
         }
     }
     assert "license" not in _worker(spec)
@@ -518,7 +518,7 @@ def test_overrides_merge_replace_and_delete() -> None:
     worker = _worker(spec)
     assert worker["worker"]["heartbeat_period"] == "1s"
     assert worker["worker"]["shuffle_location"] == {
-        "local": {"path": "/tmp/polars/shuffle-data"}
+        "local": {"path": "/var/tmp/polars/shuffle-data"}
     }
     assert "cpu_reserved" not in worker
 

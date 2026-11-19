@@ -51,7 +51,7 @@ class ServiceAccount(BaseModel):
     workspace_id: str
     client_id: str
     client_secret: SecretStr
-    cert_dir: str = "/tmp/polars/license"
+    cert_dir: str = "/var/tmp/polars/license"
 
     def __init__(
         self,
@@ -59,7 +59,7 @@ class ServiceAccount(BaseModel):
         workspace_id: str,
         client_id: str,
         client_secret: str | SecretStr,
-        cert_dir: str | os.PathLike[str] = "/tmp/polars/license",
+        cert_dir: str | os.PathLike[str] = "/var/tmp/polars/license",
         **data: typing.Any,
     ) -> None:
         # pydantic validates mappings through `__init__` too, unknown keys in `data`
