@@ -1,0 +1,53 @@
+x-ray-node: &ray-node
+  build:
+    context: .
+    dockerfile_inline: |
+      FROM python:3.12-slim
+      RUN --mount=from=ghcr.io/astral-sh/uv:0.13,source=/uv,target=/usr/local/bin/uv \
+          uv pip install --no-cache --system polars-nanook-ray
+  image: polars-nanook-ray
+  init: true
+  # Ray's object store lives in /dev/shm, 64 MiB by default in a container; keep it above the value
+  # given to Ray's --object-store-memory flag below
+  shm_size: 1gb
+  # Mount the license file, scripts and data
+  # volumes:
+  #   - /path/to/license.json:/etc/polars/license.json:ro
+  #   - /path/to/scripts:/usr/src
+
+services:
+  ray-head:
+    <<: *ray-node
+    command:
+      - ray
+      - start
+      - --block
+      - --dashboard-host=0.0.0.0
+      - --disable-usage-stats
+      - --head
+      - --num-cpus=0
+      - --object-store-memory=800000000
+      - --port=6379
+    healthcheck:
+      test: [CMD, ray, health-check]
+      interval: 5s
+      retries: 12
+    ports:
+      - 127.0.0.1:3001:3001 # Polars Nanook observatory
+      - 127.0.0.1:8265:8265 # Ray dashboard
+
+  ray-worker:
+    <<: *ray-node
+    command:
+      - ray
+      - start
+      - --address=ray-head:6379
+      - --block
+      - --disable-usage-stats
+      - --num-cpus=2
+      - --object-store-memory=800000000
+    depends_on:
+      ray-head:
+        condition: service_healthy
+    deploy:
+      replicas: 2
