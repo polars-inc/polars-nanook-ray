@@ -19,6 +19,9 @@ It will also install `ray`, and `polars-nanook-compute` which runs the scheduler
 and workers, as dependencies. The latter pins the Polars version of the
 environment, and is only installed on Linux, the only platform it is released
 for: the Ray nodes running the scheduler and workers need to be Linux hosts.
+Elsewhere, such as on macOS, [`tests/docker-compose.yaml`](tests/docker-compose.yaml)
+starts a local Ray cluster of Linux containers to run the example below on: see
+[`tests/README.md`](tests/README.md).
 
 Start a Ray head node:
 
