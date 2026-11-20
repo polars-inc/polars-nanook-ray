@@ -9,12 +9,12 @@ dependencies = [
     "polars-nanook>=0.13",
     "polars-nanook-compute>=0.10.1; sys_platform == 'linux'",
     "pydantic>=2.0",
-    "ray[default]>=2.50",
+    "ray>=2.50",
     "toml>=0.10",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.1"]
+dev = ["psutil", "pytest>=9.1", "ray[default]>=2.50"]
 
 [build-system]
 requires = ["hatchling"]
