@@ -4,7 +4,7 @@ x-ray-node: &ray-node
     dockerfile_inline: |
       FROM python:3.12-slim
       RUN --mount=from=ghcr.io/astral-sh/uv:0.13,source=/uv,target=/usr/local/bin/uv \
-          uv pip install --no-cache --system polars-nanook-ray
+          uv pip install --no-cache --system polars-nanook-ray "ray[default]"
   image: polars-nanook-ray
   init: true
   # Ray's object store lives in /dev/shm, 64 MiB by default in a container; keep it above the value

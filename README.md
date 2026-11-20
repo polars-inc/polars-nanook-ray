@@ -23,15 +23,16 @@ Elsewhere, such as on macOS, [`tests/docker-compose.yaml`](tests/docker-compose.
 starts a local Ray cluster of Linux containers to run the example below on: see
 [`tests/README.md`](tests/README.md).
 
+The `ray` dependency is the minimal Ray. Install `"ray[default]"` as well for the
+Ray dashboard, or `"ray[client]"` to connect through Ray Client (`ray://`).
+
 Start a Ray head node:
 
 ```sh
 ray start \
-  --dashboard-host=0.0.0.0 \
   --disable-usage-stats \
   --head \
-  --port="6379" \
-  --ray-client-server-port="10001"
+  --port="6379"
 ```
 
 Then start a cluster of four workers on this host and run a query on it:
